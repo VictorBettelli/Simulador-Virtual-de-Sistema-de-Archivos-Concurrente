@@ -9,7 +9,8 @@ import test.TestFileSystem;
  *
  * @author luisf
  */
-public class  LinkedList<T> {
+
+public class LinkedList<T> {
     private Node<T> head;
     private int size;
 
@@ -65,13 +66,24 @@ public class  LinkedList<T> {
     public int size() {
         return size;
     }
-    
+
     public boolean isEmpty() {
         return size == 0;
     }
-    
+
     public Node<T> getHead() {
         return head;
     }
 
+    // NUEVO MÉTODO contains
+    public boolean contains(T data) {
+        Node<T> current = head;
+        while (current != null) {
+            if (current.data.equals(data)) {
+                return true;
+            }
+            current = current.next;
+        }
+        return false;
+    }
 }

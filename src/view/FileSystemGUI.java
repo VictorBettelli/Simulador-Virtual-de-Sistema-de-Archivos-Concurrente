@@ -1,18 +1,11 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
- */
 package view;
 
-/**
- *
- * @author luisf
- */
 import javax.swing.*;
 import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.event.*;
 import model.FileSystemNode;
+import model.Disk;
 import util.LinkedList;
 import util.Node;
 
@@ -21,32 +14,35 @@ public class FileSystemGUI extends JFrame {
     private DefaultTreeModel treeModel;
     private JTextArea infoArea;
     private FileSystemNode root;
-    
+    private Disk disk;
+    private JPanel diskPanel;
+
     public FileSystemGUI() {
+        disk = new Disk();
         initComponents();
         initFileSystem();
         refreshTree();
+        updateDiskView();
     }
-    
+
     private void initComponents() {
         setTitle("Simulador de Sistema de Archivos");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout());
-        
+
         // Panel izquierdo con el árbol
         JPanel treePanel = new JPanel(new BorderLayout());
         treePanel.setBorder(BorderFactory.createTitledBorder("Estructura de Archivos"));
         treePanel.setPreferredSize(new Dimension(300, 500));
-        
-        // Crear nodo raíz para el JTree
+
         DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode("Raíz (/)");
         treeModel = new DefaultTreeModel(rootNode);
         fileTree = new JTree(treeModel);
         fileTree.addTreeSelectionListener(e -> showFileInfo());
-        
+
         JScrollPane treeScroll = new JScrollPane(fileTree);
         treePanel.add(treeScroll, BorderLayout.CENTER);
-        
+
         // Panel derecho con información
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoPanel.setBorder(BorderFactory.createTitledBorder("Información del elemento"));
@@ -54,46 +50,86 @@ public class FileSystemGUI extends JFrame {
         infoArea.setEditable(false);
         infoArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         infoPanel.add(new JScrollPane(infoArea), BorderLayout.CENTER);
-        
-        // Agregar paneles al frame
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treePanel, infoPanel);
+
+        // Panel para el disco
+        JPanel diskViewPanel = new JPanel(new BorderLayout());
+        diskViewPanel.setBorder(BorderFactory.createTitledBorder("Disco (bloques)"));
+        diskPanel = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                drawDisk(g);
+            }
+        };
+        diskPanel.setPreferredSize(new Dimension(300, 300));
+        diskPanel.setBackground(Color.WHITE);
+        diskViewPanel.add(new JScrollPane(diskPanel), BorderLayout.CENTER);
+
+        // Panel combinado derecho
+        JPanel rightPanel = new JPanel(new BorderLayout());
+        rightPanel.add(infoPanel, BorderLayout.CENTER);
+        rightPanel.add(diskViewPanel, BorderLayout.SOUTH);
+
+        // Split horizontal
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treePanel, rightPanel);
         splitPane.setDividerLocation(300);
         add(splitPane, BorderLayout.CENTER);
-        
+
         // Panel de control
         JPanel controlPanel = new JPanel(new FlowLayout());
         controlPanel.setBorder(BorderFactory.createTitledBorder("Acciones"));
-        
+
         JButton btnCreateDir = new JButton("Crear Directorio");
         JButton btnCreateFile = new JButton("Crear Archivo");
         JButton btnDelete = new JButton("Eliminar");
         JButton btnRefresh = new JButton("Refrescar");
-        
-        // Listeners
+
         btnCreateDir.addActionListener(e -> showCreateDialog(true));
         btnCreateFile.addActionListener(e -> showCreateDialog(false));
         btnDelete.addActionListener(e -> deleteSelected());
         btnRefresh.addActionListener(e -> refreshTree());
-        
+
         controlPanel.add(btnCreateDir);
         controlPanel.add(btnCreateFile);
         controlPanel.add(btnDelete);
         controlPanel.add(btnRefresh);
         add(controlPanel, BorderLayout.SOUTH);
-        
-        // Panel de estado
+
+        // Panel de estado (temporal, luego se mejorará con modos de usuario)
         JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         statusPanel.setBorder(BorderFactory.createEtchedBorder());
         JLabel statusLabel = new JLabel(" Modo: Administrador | Usuario actual: admin");
         statusPanel.add(statusLabel);
         add(statusPanel, BorderLayout.NORTH);
-        
-        setSize(800, 600);
+
+        setSize(900, 700);
         setLocationRelativeTo(null);
     }
-    
+
+    private void drawDisk(Graphics g) {
+        int cols = 16;
+        int blockSize = 18;
+        Disk.Block[] blocks = disk.getBlocks();
+        for (int i = 0; i < Disk.SIZE; i++) {
+            int x = (i % cols) * blockSize;
+            int y = (i / cols) * blockSize;
+            if (blocks[i].isLibre()) {
+                g.setColor(Color.LIGHT_GRAY);
+            } else {
+                Color c = blocks[i].getColor();
+                g.setColor(c != null ? c : Color.GREEN);
+            }
+            g.fillRect(x, y, blockSize - 1, blockSize - 1);
+            g.setColor(Color.BLACK);
+            g.drawRect(x, y, blockSize - 1, blockSize - 1);
+        }
+    }
+
+    private void updateDiskView() {
+        diskPanel.repaint();
+    }
+
     private void initFileSystem() {
-        // Inicializar sistema de archivos con directorio raíz
         root = new FileSystemNode();
         root.setName("/");
         root.setOwner("admin");
@@ -101,9 +137,7 @@ public class FileSystemGUI extends JFrame {
         root.setParent(null);
         root.setChildren(new LinkedList<>());
 
-        System.out.println("Creando estructura de archivos...");
-
-        // Crear estructura inicial
+        // Directorios base
         FileSystemNode home = new FileSystemNode();
         home.setName("home");
         home.setOwner("admin");
@@ -128,7 +162,7 @@ public class FileSystemGUI extends JFrame {
         usr.setChildren(new LinkedList<>());
         root.getChildren().add(usr);
 
-        // Crear usuario1 en home
+        // Usuarios
         FileSystemNode user1 = new FileSystemNode();
         user1.setName("usuario1");
         user1.setOwner("usuario1");
@@ -137,7 +171,6 @@ public class FileSystemGUI extends JFrame {
         user1.setChildren(new LinkedList<>());
         home.getChildren().add(user1);
 
-        // Crear usuario2 en home
         FileSystemNode user2 = new FileSystemNode();
         user2.setName("usuario2");
         user2.setOwner("usuario2");
@@ -146,13 +179,16 @@ public class FileSystemGUI extends JFrame {
         user2.setChildren(new LinkedList<>());
         home.getChildren().add(user2);
 
-        // Archivos para usuario1
+        // Archivos con colores únicos
         FileSystemNode doc1 = new FileSystemNode();
         doc1.setName("documento.txt");
         doc1.setOwner("usuario1");
         doc1.setDirectory(false);
         doc1.setSizeInBlocks(5);
-        doc1.setFirstBlock(10);
+        Color colorDoc1 = disk.generateUniqueColor();
+        int firstBlockDoc1 = disk.asignarBloques(5, colorDoc1);
+        doc1.setFirstBlock(firstBlockDoc1);
+        doc1.setColor(colorDoc1);
         doc1.setParent(user1);
         user1.getChildren().add(doc1);
 
@@ -161,34 +197,38 @@ public class FileSystemGUI extends JFrame {
         foto.setOwner("usuario1");
         foto.setDirectory(false);
         foto.setSizeInBlocks(8);
-        foto.setFirstBlock(15);
+        Color colorFoto = disk.generateUniqueColor();
+        int firstBlockFoto = disk.asignarBloques(8, colorFoto);
+        foto.setFirstBlock(firstBlockFoto);
+        foto.setColor(colorFoto);
         foto.setParent(user1);
         user1.getChildren().add(foto);
 
-        // Archivos para usuario2
         FileSystemNode notas = new FileSystemNode();
         notas.setName("notas.txt");
         notas.setOwner("usuario2");
         notas.setDirectory(false);
         notas.setSizeInBlocks(3);
-        notas.setFirstBlock(23);
+        Color colorNotas = disk.generateUniqueColor();
+        int firstBlockNotas = disk.asignarBloques(3, colorNotas);
+        notas.setFirstBlock(firstBlockNotas);
+        notas.setColor(colorNotas);
         notas.setParent(user2);
         user2.getChildren().add(notas);
 
-        // Archivo en etc
         FileSystemNode config = new FileSystemNode();
         config.setName("config.conf");
         config.setOwner("admin");
         config.setDirectory(false);
         config.setSizeInBlocks(2);
-        config.setFirstBlock(30);
+        Color colorConfig = disk.generateUniqueColor();
+        int firstBlockConfig = disk.asignarBloques(2, colorConfig);
+        config.setFirstBlock(firstBlockConfig);
+        config.setColor(colorConfig);
         config.setParent(etc);
         etc.getChildren().add(config);
-
-        System.out.println("Estructura creada. Root hijos: " + root.getChildren().size());
     }
 
-    // Método para crear directorio (recibe FileSystemNode, no String)
     private void createDirectory(FileSystemNode parent, String name, String owner) {
         if (parent == null || !parent.isDirectory()) return;
 
@@ -203,13 +243,26 @@ public class FileSystemGUI extends JFrame {
             parent.setChildren(new LinkedList<>());
         }
         parent.getChildren().add(newDir);
-
-        System.out.println("Directorio creado: " + name + " en " + parent.getName());
     }
 
-        // Método para crear archivo (recibe FileSystemNode, no String)
-    private void createFile(FileSystemNode parent, String name, String owner, int size, int firstBlock) {
+    private void createFile(FileSystemNode parent, String name, String owner, int size) {
         if (parent == null || !parent.isDirectory()) return;
+
+        if (!disk.hayEspacio(size)) {
+            JOptionPane.showMessageDialog(this,
+                "No hay suficiente espacio en disco.",
+                "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        Color color = disk.generateUniqueColor();
+        int firstBlock = disk.asignarBloques(size, color);
+        if (firstBlock == -1) {
+            JOptionPane.showMessageDialog(this,
+                "Error al asignar bloques.",
+                "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
 
         FileSystemNode newFile = new FileSystemNode();
         newFile.setName(name);
@@ -217,16 +270,15 @@ public class FileSystemGUI extends JFrame {
         newFile.setDirectory(false);
         newFile.setSizeInBlocks(size);
         newFile.setFirstBlock(firstBlock);
+        newFile.setColor(color);
         newFile.setParent(parent);
 
         if (parent.getChildren() == null) {
             parent.setChildren(new LinkedList<>());
         }
         parent.getChildren().add(newFile);
-
-        System.out.println("Archivo creado: " + name + " (" + size + " bloques) en " + parent.getName());
     }
-    
+
     private FileSystemNode findNodeByPath(String path) {
         if (path.equals("/") || path.equals("")) {
             return root;
@@ -239,7 +291,7 @@ public class FileSystemGUI extends JFrame {
             if (part.isEmpty()) continue;
 
             if (current.getChildren() != null) {
-                Node<FileSystemNode> childNode = current.getChildren().getHead(); // CORREGIDO
+                Node<FileSystemNode> childNode = current.getChildren().getHead();
                 boolean found = false;
 
                 while (childNode != null) {
@@ -259,18 +311,12 @@ public class FileSystemGUI extends JFrame {
 
         return current;
     }
-    
+
     private void buildTreeNodes(DefaultMutableTreeNode treeNode, FileSystemNode fsNode) {
-        // Crear nodo con el NOMBRE como texto visible
         DefaultMutableTreeNode childNode = new DefaultMutableTreeNode(fsNode.getName());
-
-        // Guardar el objeto COMPLETO como user object para poder recuperarlo después
         childNode.setUserObject(fsNode);
-
-        // Agregar al padre
         treeNode.add(childNode);
 
-        // Si es directorio y tiene hijos, procesarlos recursivamente
         if (fsNode.isDirectory() && fsNode.getChildren() != null && fsNode.getChildren().size() > 0) {
             Node<FileSystemNode> current = fsNode.getChildren().getHead();
             while (current != null) {
@@ -280,18 +326,11 @@ public class FileSystemGUI extends JFrame {
         }
     }
 
-    // Método refreshTree CORREGIDO
     private void refreshTree() {
-        // Crear nodo raíz del JTree con nombre visible
         DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode("Raíz (/)");
-
-        // Guardar el objeto root como user object
         rootNode.setUserObject(root);
-
-        // Limpiar hijos existentes
         rootNode.removeAllChildren();
 
-        // Construir el árbol desde nuestra estructura
         if (root.getChildren() != null) {
             Node<FileSystemNode> current = root.getChildren().getHead();
             while (current != null) {
@@ -300,31 +339,22 @@ public class FileSystemGUI extends JFrame {
             }
         }
 
-        // Actualizar el modelo del árbol
         treeModel.setRoot(rootNode);
         treeModel.reload();
-
-        // Expandir todo para ver la estructura
         expandAllNodes();
     }
-    
+
     private void expandAllNodes() {
         for (int i = 0; i < fileTree.getRowCount(); i++) {
             fileTree.expandRow(i);
         }
     }
-    
-    // Método showFileInfo CORREGIDO
-    private void showFileInfo() {
-        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) 
-            fileTree.getLastSelectedPathComponent();
 
+    private void showFileInfo() {
+        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
         if (selectedNode == null) return;
 
-        // Recuperar el objeto FileSystemNode del user object
         Object userObj = selectedNode.getUserObject();
-
-        // Si no hay user object o no es FileSystemNode, no podemos mostrar info
         if (!(userObj instanceof FileSystemNode)) {
             infoArea.setText("No hay información disponible para este elemento");
             return;
@@ -337,7 +367,6 @@ public class FileSystemGUI extends JFrame {
         info.append("  INFORMACIÓN DEL ELEMENTO\n");
         info.append("══════════════════════════════\n\n");
 
-        // Mostrar icono según tipo
         if (fsNode.isDirectory()) {
             info.append("📁 ");
         } else {
@@ -358,16 +387,13 @@ public class FileSystemGUI extends JFrame {
         }
 
         info.append("\n══════════════════════════════");
-
         infoArea.setText(info.toString());
     }
 
-    // Método auxiliar para obtener ruta completa
     private String getFullPath(FileSystemNode node) {
         if (node == null) return "";
         if (node.getParent() == null) return node.getName();
 
-        // Construir ruta recursivamente
         String parentPath = getFullPath(node.getParent());
         if (parentPath.equals("/")) {
             return parentPath + node.getName();
@@ -376,32 +402,23 @@ public class FileSystemGUI extends JFrame {
         }
     }
 
-    // Método auxiliar para obtener el directorio seleccionado
     private FileSystemNode getSelectedDirectory() {
-        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) 
-            fileTree.getLastSelectedPathComponent();
-
+        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
         if (selectedNode == null) {
-            // Si no hay selección, usar la raíz
             return root;
         }
 
         Object userObj = selectedNode.getUserObject();
-
         if (userObj instanceof FileSystemNode) {
             FileSystemNode node = (FileSystemNode) userObj;
-            // Si es un archivo, usar su padre
             if (!node.isDirectory()) {
                 return node.getParent();
             }
-            // Si es directorio, usarlo directamente
             return node;
         }
-
-        // Por defecto, usar la raíz
         return root;
     }
-    
+
     private void showCreateDialog(boolean isDirectory) {
         String type = isDirectory ? "directorio" : "archivo";
         JTextField nameField = new JTextField(20);
@@ -419,113 +436,118 @@ public class FileSystemGUI extends JFrame {
             panel.add(sizeField);
         }
 
-        // Obtener el directorio padre seleccionado (como objeto FileSystemNode, NO como String)
         FileSystemNode parentDir = getSelectedDirectory();
-
         String parentPath = (parentDir != null) ? getFullPath(parentDir) : "/";
         panel.add(new JLabel(""));
         panel.add(new JLabel("Directorio actual: " + parentPath));
 
-        int result = JOptionPane.showConfirmDialog(this, panel, 
-            "Crear " + type, JOptionPane.OK_CANCEL_OPTION);
+        int result = JOptionPane.showConfirmDialog(this, panel,
+                "Crear " + type, JOptionPane.OK_CANCEL_OPTION);
 
         if (result == JOptionPane.OK_OPTION) {
             String name = nameField.getText().trim();
             String owner = ownerField.getText().trim();
 
             if (name.isEmpty() || owner.isEmpty()) {
-                JOptionPane.showMessageDialog(this, 
-                    "Nombre y dueño no pueden estar vacíos", 
-                    "Error", JOptionPane.ERROR_MESSAGE);
+                JOptionPane.showMessageDialog(this,
+                        "Nombre y dueño no pueden estar vacíos",
+                        "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
 
             if (parentDir == null) {
-                JOptionPane.showMessageDialog(this, 
-                    "Debe seleccionar un directorio padre", 
-                    "Error", JOptionPane.ERROR_MESSAGE);
+                JOptionPane.showMessageDialog(this,
+                        "Debe seleccionar un directorio padre",
+                        "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
 
             if (isDirectory) {
-                // Crear directorio - pasamos el objeto FileSystemNode, no el String
                 createDirectory(parentDir, name, owner);
             } else {
                 try {
                     int size = Integer.parseInt(sizeField.getText().trim());
-                    if (size <= 0) {
-                        throw new NumberFormatException();
-                    }
-                    // Por ahora asignamos un primer bloque aleatorio
-                    int firstBlock = (int)(Math.random() * 100) + 1;
-                    // Crear archivo - pasamos el objeto FileSystemNode, no el String
-                    createFile(parentDir, name, owner, size, firstBlock);
+                    if (size <= 0) throw new NumberFormatException();
+                    createFile(parentDir, name, owner, size);
                 } catch (NumberFormatException e) {
-                    JOptionPane.showMessageDialog(this, 
-                        "Tamaño debe ser un número entero positivo", 
-                        "Error", JOptionPane.ERROR_MESSAGE);
+                    JOptionPane.showMessageDialog(this,
+                            "Tamaño debe ser un número entero positivo",
+                            "Error", JOptionPane.ERROR_MESSAGE);
                     return;
                 }
             }
-
             refreshTree();
+            updateDiskView();
         }
     }
-    
+
     private void deleteSelected() {
-        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) 
-            fileTree.getLastSelectedPathComponent();
-        
+        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
+
         if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
-            JOptionPane.showMessageDialog(this, 
-                "Seleccione un elemento para eliminar", 
-                "Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(this,
+                    "Seleccione un elemento para eliminar",
+                    "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        
+
         FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
-        
+
         if (fsNode == root) {
-            JOptionPane.showMessageDialog(this, 
-                "No se puede eliminar el directorio raíz", 
-                "Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(this,
+                    "No se puede eliminar el directorio raíz",
+                    "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        
-        int confirm = JOptionPane.showConfirmDialog(this, 
-            "¿Está seguro de eliminar " + fsNode.getFullPath() + "?\n" +
-            (fsNode.isDirectory() ? "Se eliminarán todos sus contenidos." : ""),
-            "Confirmar eliminación", JOptionPane.YES_NO_OPTION);
-        
+
+        int confirm = JOptionPane.showConfirmDialog(this,
+                "¿Está seguro de eliminar " + fsNode.getFullPath() + "?\n" +
+                        (fsNode.isDirectory() ? "Se eliminarán todos sus contenidos." : ""),
+                "Confirmar eliminación", JOptionPane.YES_NO_OPTION);
+
         if (confirm == JOptionPane.YES_OPTION) {
+            if (!fsNode.isDirectory()) {
+                disk.liberarBloques(fsNode.getFirstBlock(), fsNode.getColor());
+            } else {
+                liberarBloquesRecursivo(fsNode);
+            }
+
             FileSystemNode parent = fsNode.getParent();
             if (parent != null && parent.getChildren() != null) {
                 parent.getChildren().remove(fsNode);
                 refreshTree();
-                
-                JOptionPane.showMessageDialog(this, 
-                    "Elemento eliminado correctamente", 
-                    "Éxito", JOptionPane.INFORMATION_MESSAGE);
+                updateDiskView();
+                JOptionPane.showMessageDialog(this,
+                        "Elemento eliminado correctamente",
+                        "Éxito", JOptionPane.INFORMATION_MESSAGE);
             }
         }
     }
-    
-    
-    public static void main(String[] args) {
-    SwingUtilities.invokeLater(() -> {
-        try {
-            // Establecer el Look and Feel del sistema
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        
-        // Crear y mostrar la ventana
-        FileSystemGUI gui = new FileSystemGUI();
-        gui.setVisible(true);
-        
-        System.out.println("✅ Ventana del simulador abierta correctamente");
-    });
 
-}
+    private void liberarBloquesRecursivo(FileSystemNode node) {
+        if (node.isDirectory()) {
+            if (node.getChildren() != null) {
+                Node<FileSystemNode> current = node.getChildren().getHead();
+                while (current != null) {
+                    liberarBloquesRecursivo(current.data);
+                    current = current.next;
+                }
+            }
+        } else {
+            disk.liberarBloques(node.getFirstBlock(), node.getColor());
+        }
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            try {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            FileSystemGUI gui = new FileSystemGUI();
+            gui.setVisible(true);
+            System.out.println("✅ Ventana del simulador abierta correctamente");
+        });
+    }
 }
