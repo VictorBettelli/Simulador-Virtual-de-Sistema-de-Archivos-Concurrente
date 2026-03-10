@@ -23,10 +23,13 @@ public class Scheduler {
     private int cabezaActual; // posición actual del cabezal
     private boolean direccionAscendente; // para SCAN y C-SCAN (true = hacia arriba/derecha)
     private Disk disk; // referencia al disco para conocer posiciones de bloques
+    private LinkedList<Process> todosLosProcesos = new LinkedList<>();
+    private int totalProcesos;
     
     public Scheduler(Disk disk) {
         this.disk = disk;
         this.colaProcesos = new LinkedList<>();
+        this.todosLosProcesos = new LinkedList<>();
         this.politicaActual = FIFO;
         this.cabezaActual = 0; // posición inicial por defecto
         this.direccionAscendente = true;
@@ -51,6 +54,12 @@ public class Scheduler {
     public void agregarProceso(Process p) {
         p.setEstado("LISTO");
         colaProcesos.add(p);
+        todosLosProcesos.add(p); // <-- agregar también aquí
+        totalProcesos++;
+        System.out.println("Proceso agregado: " + p);
+        }
+    public LinkedList<Process> getProcesosTodos() {
+        return todosLosProcesos; // <-- nuevo método
     }
     
     // Ejecuta el siguiente proceso según la política actual

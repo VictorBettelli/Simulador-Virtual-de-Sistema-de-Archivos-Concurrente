@@ -11,6 +11,13 @@ import model.Scheduler;
 import util.LinkedList;
 import util.Node;
 import config.UserSession;
+import java.io.File;
+import test.TestCase;
+import test.TestCaseLoader;
+import javax.swing.JFileChooser;
+import javax.swing.filechooser.FileNameExtensionFilter;
+import java.io.File;
+import persistence.FileSystemPersistence;
 
 public class FileSystemGUI extends JFrame {
     private JTree fileTree;
@@ -49,7 +56,7 @@ public class FileSystemGUI extends JFrame {
         refreshTree();
         updateDiskView();
         actualizarVistaProcesos();
-        agregarProcesosPrueba();
+       
         actualizarPermisosInterfaz();
     }
 
@@ -135,18 +142,30 @@ public class FileSystemGUI extends JFrame {
 
         JButton btnCreateDir = new JButton("Crear Directorio");
         JButton btnCreateFile = new JButton("Crear Archivo");
+        JButton btnUpdate = new JButton("Modificar Nombre");
         JButton btnDelete = new JButton("Eliminar");
         JButton btnRefresh = new JButton("Refrescar");
+        JButton btnSave = new JButton("💾 Guardar");      
+        JButton btnLoad = new JButton("📂 Cargar"); 
+        JButton btnLoadTestCase = new JButton("📋 Cargar Caso Prueba");
 
         btnCreateDir.addActionListener(e -> solicitarCrearDirectorio());
         btnCreateFile.addActionListener(e -> solicitarCrearArchivo());
+        btnUpdate.addActionListener(e -> solicitarModificarNombre());
         btnDelete.addActionListener(e -> solicitarEliminar());
         btnRefresh.addActionListener(e -> refreshTree());
+        btnSave.addActionListener(e -> guardarEstado());   
+        btnLoad.addActionListener(e -> cargarEstado());
+        btnLoadTestCase.addActionListener(e -> cargarCasoPrueba());
 
         controlPanel.add(btnCreateDir);
         controlPanel.add(btnCreateFile);
+        controlPanel.add(btnUpdate);
         controlPanel.add(btnDelete);
         controlPanel.add(btnRefresh);
+        controlPanel.add(btnSave);   
+        controlPanel.add(btnLoad);
+        controlPanel.add(btnLoadTestCase);
 
         // Panel de planificación (scheduler)
         JPanel schedulerPanel = new JPanel(new BorderLayout());
@@ -305,16 +324,13 @@ public class FileSystemGUI extends JFrame {
     private void actualizarPermisosInterfaz() {
         boolean isAdmin = userSession.isAdmin();
 
-        // Habilitar/deshabilitar botones según modo
-        // Nota: Necesitas obtener la referencia correcta a los botones
-        // Esto asume que están en el panel sur, primer componente
+        // Buscar el panel de acciones
         if (getContentPane().getComponentCount() > 2) {
             Component south = getContentPane().getComponent(2);
             if (south instanceof JPanel) {
                 Component[] components = ((JPanel) south).getComponents();
                 for (Component comp : components) {
                     if (comp instanceof JPanel) {
-                        // El panel de acciones es el primer panel en south
                         if (((JPanel) comp).getBorder() != null && 
                             ((JPanel) comp).getBorder().toString().contains("Acciones")) {
 
@@ -324,10 +340,16 @@ public class FileSystemGUI extends JFrame {
                                     JButton button = (JButton) btn;
                                     String text = button.getText();
 
+                                    // Botones de escritura solo para admin
                                     if (text.equals("Crear Directorio") || 
                                         text.equals("Crear Archivo") || 
+                                        text.equals("Modificar Nombre") || // <-- NUEVO
                                         text.equals("Eliminar")) {
                                         button.setEnabled(isAdmin);
+                                    }
+                                    // Botón Refrescar siempre habilitado
+                                    if (text.equals("Refrescar")) {
+                                        button.setEnabled(true);
                                     }
                                 }
                             }
@@ -342,6 +364,48 @@ public class FileSystemGUI extends JFrame {
         if (btnSetCabeza != null) btnSetCabeza.setEnabled(true);
         if (politicaCombo != null) politicaCombo.setEnabled(true);
         if (cabezaSpinner != null) cabezaSpinner.setEnabled(true);
+    }
+    private void guardarEstado() {
+        int confirm = JOptionPane.showConfirmDialog(this,
+            "¿Guardar el estado actual del sistema?\n" +
+            "Se guardarán: estructura de archivos, disco y procesos",
+            "Guardar estado", JOptionPane.YES_NO_OPTION);
+        
+        if (confirm == JOptionPane.YES_OPTION) {
+            FileSystemPersistence.guardarTodo(root, disk, scheduler.getProcesosTodos());
+            JOptionPane.showMessageDialog(this, 
+                "Estado guardado exitosamente en /data", 
+                "Éxito", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+    
+    private void cargarEstado() {
+        int confirm = JOptionPane.showConfirmDialog(this,
+            "¿Cargar estado guardado?\n" +
+            "Se perderán los cambios no guardados.",
+            "Cargar estado", JOptionPane.YES_NO_OPTION);
+        
+        if (confirm == JOptionPane.YES_OPTION) {
+            // Limpiar estructura actual
+            root = new FileSystemNode();
+            root.setName("/");
+            root.setOwner("admin");
+            root.setDirectory(true);
+            root.setParent(null);
+            root.setChildren(new LinkedList<>());
+            
+            // Cargar desde JSON
+            FileSystemPersistence.cargarTodo(root, disk, scheduler.getProcesosTodos());
+            
+            // Actualizar vistas
+            refreshTree();
+            updateDiskView();
+            actualizarVistaProcesos();
+            
+            JOptionPane.showMessageDialog(this, 
+                "Estado cargado exitosamente", 
+                "Éxito", JOptionPane.INFORMATION_MESSAGE);
+        }
     }
     
     private void drawDisk(Graphics g) {
@@ -467,18 +531,71 @@ public class FileSystemGUI extends JFrame {
         etc.getChildren().add(config);
     }
     
-    private void agregarProcesosPrueba() {
-    int[] bloques = {95, 180, 34, 119, 11, 123, 62, 64};
-    for (int i = 0; i < bloques.length; i++) {
-        FileSystemNode temp = new FileSystemNode();
-        temp.setName("test" + i);
-        temp.setDirectory(false);
-        Process p = new Process("LEER", temp, "admin");
-        p.setBloqueSolicitado(bloques[i]);
-        scheduler.agregarProceso(p);
+    private void cargarCasoPrueba() {
+        JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setDialogTitle("Seleccionar archivo JSON de caso de prueba");
+        fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Archivos JSON", "json"));
+
+        int result = fileChooser.showOpenDialog(this);
+
+        if (result == JFileChooser.APPROVE_OPTION) {
+            File archivo = fileChooser.getSelectedFile();
+
+            try {
+                // Cargar el caso de prueba
+                TestCase testCase = test.TestCaseLoader.cargarTestCase(archivo.getAbsolutePath());
+
+                if (testCase != null) {
+                    // Limpiar sistema actual
+                    reiniciarSistema();
+
+                    // Aplicar el caso de prueba
+                    test.TestCaseLoader.aplicarTestCase(testCase, root, disk, scheduler);
+
+                    // Actualizar vistas
+                    refreshTree();
+                    updateDiskView();
+                    actualizarVistaProcesos();
+
+                    // Registrar en log
+                    logArea.append("📋 Caso de prueba cargado: " + testCase.getTestId() + "\n");
+                    logArea.append("   Cabezal inicial: " + testCase.getInitialHead() + "\n");
+                    logArea.append("   Solicitudes: " + testCase.getRequests().size() + "\n");
+
+                    JOptionPane.showMessageDialog(this, 
+                        "Caso de prueba cargado exitosamente:\n" +
+                        "ID: " + testCase.getTestId() + "\n" +
+                        "Solicitudes: " + testCase.getRequests().size(),
+                        "Éxito", JOptionPane.INFORMATION_MESSAGE);
+                }
+
+            } catch (Exception e) {
+                JOptionPane.showMessageDialog(this, 
+                    "Error cargando caso de prueba:\n" + e.getMessage(),
+                    "Error", JOptionPane.ERROR_MESSAGE);
+                e.printStackTrace();
+            }
+        }
     }
-    scheduler.setCabezaActual(50);
-}
+
+    private void reiniciarSistema() {
+        // Limpiar disco
+        disk = new Disk();
+
+        // Limpiar estructura de archivos
+        root = new FileSystemNode();
+        root.setName("/");
+        root.setOwner("admin");
+        root.setDirectory(true);
+        root.setParent(null);
+        root.setChildren(new LinkedList<>());
+
+        // Limpiar scheduler
+        scheduler = new Scheduler(disk);
+
+        // Limpiar log
+        logArea.setText("");
+    }
 
     // Método para crear directorio (ejecución directa)
     private void createDirectory(FileSystemNode parent, String name, String owner) {
@@ -708,7 +825,7 @@ public class FileSystemGUI extends JFrame {
         FileSystemNode archivo = p.getArchivo();
         String nombre = archivo.getName();
         String owner = p.getOwner();
-        int tamano = p.getTamano();
+        int tamano = p.getTamanio();
         FileSystemNode padre = archivo.getParent();
         if (padre == null) return false;
         
@@ -818,6 +935,52 @@ public class FileSystemGUI extends JFrame {
             }
             createDirectory(parentDir, name, owner);
             refreshTree();
+        }
+    }
+    private void solicitarModificarNombre() {
+        // VERIFICACIÓN - Solo admin puede modificar
+        if (!userSession.isAdmin()) {
+            JOptionPane.showMessageDialog(this, 
+                "Modo usuario: no tiene permisos para modificar nombres", 
+                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
+        if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
+            JOptionPane.showMessageDialog(this, "Seleccione un elemento para modificar", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
+
+        if (fsNode == root) {
+            JOptionPane.showMessageDialog(this, "No se puede modificar el nombre de la raíz", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        // Diálogo para nuevo nombre
+        String nuevoNombre = JOptionPane.showInputDialog(this,
+            "Nuevo nombre para '" + fsNode.getName() + "':",
+            "Modificar nombre", JOptionPane.QUESTION_MESSAGE);
+
+        if (nuevoNombre != null && !nuevoNombre.trim().isEmpty()) {
+            String nombreAntiguo = fsNode.getName();
+            fsNode.setName(nuevoNombre.trim());
+
+            // Si es archivo, actualizar en disco también (opcional)
+            if (!fsNode.isDirectory() && fsNode.getFirstBlock() != -1) {
+                // Podríamos actualizar alguna referencia si fuera necesario
+            }
+
+            refreshTree();
+
+            // Registrar en log
+            logArea.append("Admin modificó nombre: '" + nombreAntiguo + "' → '" + nuevoNombre + "'\n");
+
+            JOptionPane.showMessageDialog(this, 
+                "Nombre modificado exitosamente", 
+                "Éxito", JOptionPane.INFORMATION_MESSAGE);
         }
     }
 
