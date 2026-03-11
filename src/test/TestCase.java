@@ -47,8 +47,12 @@ public class TestCase {
             public int getBlock() { return block; }
             public String getName() { return name; }
             public int getBlocks() { return blocks; }
+            
         }
-    }
+        public void setFiles(LinkedList<FileEntry> files) {this.files = files;}
+            
+        public LinkedList<FileEntry> getFiles() {return files;}
+ }
     
     // Getters y setters
     public String getTestId() { return testId; }
@@ -62,4 +66,7 @@ public class TestCase {
     
     public SystemFiles getSystemFiles() { return systemFiles; }
     public void setSystemFiles(SystemFiles systemFiles) { this.systemFiles = systemFiles; }
+
+
+  
 }

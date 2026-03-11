@@ -98,4 +98,35 @@ public class Disk {
         public Color getColor() { return color; }
         public void setColor(Color color) { this.color = color; }
     }
+    /**
+ * Asigna bloques en posiciones exactas (consecutivas) a un archivo.
+ * @param primerBloque índice del primer bloque
+ * @param cantidad número de bloques a asignar
+ * @param color color del archivo
+ * @return true si se asignaron correctamente, false si algún bloque ya estaba ocupado o fuera de rango
+ */
+public boolean asignarBloquesExactos(int primerBloque, int cantidad, Color color) {
+    if (primerBloque < 0 || primerBloque + cantidad > SIZE) return false;
+    // Verificar que todos los bloques estén libres
+    for (int i = 0; i < cantidad; i++) {
+        int b = primerBloque + i;
+        if (!blocks[b].isLibre()) return false;
+    }
+    // Asignar y enlazar
+    for (int i = 0; i < cantidad; i++) {
+        int b = primerBloque + i;
+        blocks[b].setLibre(false);
+        blocks[b].setColor(color);
+        if (i < cantidad - 1) {
+            blocks[b].setNext(primerBloque + i + 1);
+        } else {
+            blocks[b].setNext(-1);
+        }
+        freeList.remove((Integer) b);
+    }
+    if (!usedColors.contains(color)) {
+        usedColors.add(color);
+    }
+    return true;
+}
 }
