@@ -49,6 +49,7 @@ public class FileSystemGUI extends JFrame {
     setTitle("Simulador de Sistema de Archivos");
     setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
     setLayout(new BorderLayout());
+    
 
     // Panel izquierdo con el árbol
     JPanel treePanel = new JPanel(new BorderLayout());
@@ -81,7 +82,7 @@ public class FileSystemGUI extends JFrame {
             drawDisk(g);
         }
     };
-    diskPanel.setPreferredSize(new Dimension(300, 300));
+    diskPanel.setPreferredSize(new Dimension(480, 480));
     diskPanel.setBackground(Color.WHITE);
     diskViewPanel.add(new JScrollPane(diskPanel), BorderLayout.CENTER);
 
@@ -237,28 +238,55 @@ public class FileSystemGUI extends JFrame {
     statusPanel.add(statusLabel);
     add(statusPanel, BorderLayout.NORTH);
 
-    setSize(900, 850); // Ajustar altura
+    setSize(1000, 1000); // Ajustar altura
     setLocationRelativeTo(null);
 }
 
-    private void drawDisk(Graphics g) {
-        int cols = 16;
-        int blockSize = 18;
-        Disk.Block[] blocks = disk.getBlocks();
-        for (int i = 0; i < Disk.SIZE; i++) {
-            int x = (i % cols) * blockSize;
-            int y = (i / cols) * blockSize;
-            if (blocks[i].isLibre()) {
-                g.setColor(Color.LIGHT_GRAY);
-            } else {
-                Color c = blocks[i].getColor();
-                g.setColor(c != null ? c : Color.GREEN);
-            }
-            g.fillRect(x, y, blockSize - 1, blockSize - 1);
-            g.setColor(Color.BLACK);
-            g.drawRect(x, y, blockSize - 1, blockSize - 1);
+  private void drawDisk(Graphics g) {
+    int cols = 16;
+    int blockSize = 30; // Tamaño adecuado para que el número sea legible
+    Font font = new Font("Monospaced", Font.BOLD, 12);
+    g.setFont(font);
+    Disk.Block[] blocks = disk.getBlocks();
+    
+    for (int i = 0; i < Disk.SIZE; i++) {
+        int x = (i % cols) * blockSize;
+        int y = (i / cols) * blockSize;
+        
+        // Fondo del bloque
+        if (blocks[i].isLibre()) {
+            g.setColor(new Color(240, 240, 240)); // Gris muy claro
+        } else {
+            Color c = blocks[i].getColor();
+            g.setColor(c != null ? c : new Color(100, 200, 100));
         }
+        g.fillRect(x, y, blockSize - 1, blockSize - 1);
+        
+        // Borde sutil
+        g.setColor(new Color(180, 180, 180));
+        g.drawRect(x, y, blockSize - 1, blockSize - 1);
+        
+        // Número de bloque
+        String num = String.valueOf(i);
+        int textWidth = g.getFontMetrics().stringWidth(num);
+        int textX = x + (blockSize - textWidth) / 2;
+        int textY = y + (blockSize + g.getFontMetrics().getAscent()) / 2 - 4;
+        
+        // Color del texto según fondo
+        if (blocks[i].isLibre()) {
+            g.setColor(Color.DARK_GRAY);
+        } else {
+            Color bg = blocks[i].getColor();
+            if (bg != null) {
+                int luminancia = (int)(0.299 * bg.getRed() + 0.587 * bg.getGreen() + 0.114 * bg.getBlue());
+                g.setColor(luminancia < 128 ? Color.WHITE : Color.BLACK);
+            } else {
+                g.setColor(Color.BLACK);
+            }
+        }
+        g.drawString(num, textX, textY);
     }
+}
 
     private void updateDiskView() {
         diskPanel.repaint();
@@ -363,6 +391,7 @@ public class FileSystemGUI extends JFrame {
         config.setParent(etc);
         etc.getChildren().add(config);
     }
+//Funcion de prueba
     
     private void agregarProcesosPrueba() {
     int[] bloques = {95, 180, 34, 119, 11, 123, 62, 64};
