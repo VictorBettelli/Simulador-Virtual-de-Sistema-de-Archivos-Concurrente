@@ -41,7 +41,16 @@ public class LockManager {
         Node<FileSystemNode> currentArch = archivos.getHead();
         Node<RWLock> currentLock = locks.getHead();
         while (currentArch != null) {
-            info.add(currentArch.data.getName() + ": lock activo");
+            RWLock lock = currentLock.data;
+            String estado;
+            if (lock.isWriteLocked()) {
+                estado = "Escritura exclusiva";
+            } else if (lock.getReadLockCount() > 0) {
+                estado = "Lectura (" + lock.getReadLockCount() + " lectores)";
+            } else {
+                estado = "Libre";
+            }
+            info.add(currentArch.data.getName() + ": " + estado);
             currentArch = currentArch.next;
             currentLock = currentLock.next;
         }
