@@ -20,6 +20,7 @@ public class Scheduler extends Thread {
     private int solicitudesEsperadas = 0;
     private boolean modoManual = false;
     private boolean siguientePermitido = false;
+    private int desplazamientoTotal = 0; // NUEVO
     
     public Scheduler(Disk disk, OperacionesArchivo operaciones, LogListener logListener) {
         this.disk = disk;
@@ -44,6 +45,10 @@ public class Scheduler extends Thread {
         return cabezaActual;
     }
     
+    public int getDesplazamientoTotal() { // NUEVO GETTER
+        return desplazamientoTotal;
+    }
+    
     public synchronized void agregarSolicitud(SolicitudES solicitud) {
         colaSolicitudes.add(solicitud);
         notify();
@@ -57,7 +62,7 @@ public class Scheduler extends Thread {
     public synchronized void setModoManual(boolean manual) {
         this.modoManual = manual;
         if (!manual) {
-            notify(); // Si salimos de modo manual, desbloquear posible espera
+            notify();
         }
     }
     
@@ -68,49 +73,46 @@ public class Scheduler extends Thread {
         }
     }
     
-      @Override
-public void run() {
-    while (ejecutando) {
-        SolicitudES solicitud = null;
-        synchronized (this) {
-            // Esperar a que haya al menos una solicitud en la cola
-            while (colaSolicitudes.isEmpty() && ejecutando) {
-                try {
-                    wait();
-                } catch (InterruptedException e) {}
-            }
-            if (!ejecutando) break;
-
-            // Esperar a que lleguen todas las solicitudes si se ha fijado un número
-            if (solicitudesEsperadas > 0) {
-                while (colaSolicitudes.size() < solicitudesEsperadas && ejecutando) {
-                    try {
-                        wait();
-                    } catch (InterruptedException e) {}
-                }
-                solicitudesEsperadas = 0; // Reseteamos para próximas tandas
-            }
-
-            // Si estamos en modo manual, esperar permiso del usuario
-            if (modoManual && !colaSolicitudes.isEmpty()) {
-                siguientePermitido = false;
-                while (!siguientePermitido && ejecutando) {
+    @Override
+    public void run() {
+        while (ejecutando) {
+            SolicitudES solicitud = null;
+            synchronized (this) {
+                while (colaSolicitudes.isEmpty() && ejecutando) {
                     try {
                         wait();
                     } catch (InterruptedException e) {}
                 }
                 if (!ejecutando) break;
+
+                if (solicitudesEsperadas > 0) {
+                    while (colaSolicitudes.size() < solicitudesEsperadas && ejecutando) {
+                        try {
+                            wait();
+                        } catch (InterruptedException e) {}
+                    }
+                    solicitudesEsperadas = 0;
+                }
+
+                if (modoManual && !colaSolicitudes.isEmpty()) {
+                    siguientePermitido = false;
+                    while (!siguientePermitido && ejecutando) {
+                        try {
+                            wait();
+                        } catch (InterruptedException e) {}
+                    }
+                    if (!ejecutando) break;
+                }
+
+                solicitud = obtenerSiguienteSolicitud();
             }
 
-            // Seleccionar la siguiente solicitud según la política actual
-            solicitud = obtenerSiguienteSolicitud();
-        }
-
-        if (solicitud != null) {
-            atenderSolicitud(solicitud);
+            if (solicitud != null) {
+                atenderSolicitud(solicitud);
+            }
         }
     }
-}  
+    
     private synchronized SolicitudES obtenerSiguienteSolicitud() {
         if (colaSolicitudes.isEmpty()) return null;
         SolicitudES seleccionada = null;
@@ -147,31 +149,31 @@ public void run() {
     }
     
     private SolicitudES sstf() {
-    Node<SolicitudES> current = colaSolicitudes.getHead();
-    SolicitudES mejor = null;
-    int menorDistancia = Integer.MAX_VALUE;
-    System.out.println("=== SSTF ===");
-    System.out.println("Cabeza actual: " + cabezaActual);
-    while (current != null) {
-        SolicitudES sol = current.data;
-        int bloque = sol.getBloque();
-        System.out.println("  Solicitud: bloque " + bloque + ", distancia " + (bloque != -1 ? Math.abs(bloque - cabezaActual) : "N/A"));
-        if (bloque != -1) {
-            int distancia = Math.abs(bloque - cabezaActual);
-            if (distancia < menorDistancia) {
-                menorDistancia = distancia;
-                mejor = sol;
+        Node<SolicitudES> current = colaSolicitudes.getHead();
+        SolicitudES mejor = null;
+        int menorDistancia = Integer.MAX_VALUE;
+        System.out.println("=== SSTF ===");
+        System.out.println("Cabeza actual: " + cabezaActual);
+        while (current != null) {
+            SolicitudES sol = current.data;
+            int bloque = sol.getBloque();
+            System.out.println("  Solicitud: bloque " + bloque + ", distancia " + (bloque != -1 ? Math.abs(bloque - cabezaActual) : "N/A"));
+            if (bloque != -1) {
+                int distancia = Math.abs(bloque - cabezaActual);
+                if (distancia < menorDistancia) {
+                    menorDistancia = distancia;
+                    mejor = sol;
+                }
             }
+            current = current.next;
         }
-        current = current.next;
+        if (mejor == null) {
+            System.out.println("  Ninguna con bloque, se toma la primera.");
+            return colaSolicitudes.get(0);
+        }
+        System.out.println("  Seleccionada: bloque " + mejor.getBloque() + " con distancia " + menorDistancia);
+        return mejor;
     }
-    if (mejor == null) {
-        System.out.println("  Ninguna con bloque, se toma la primera.");
-        return colaSolicitudes.get(0);
-    }
-    System.out.println("  Seleccionada: bloque " + mejor.getBloque() + " con distancia " + menorDistancia);
-    return mejor;
-}
     
     private SolicitudES scan() {
         Node<SolicitudES> current = colaSolicitudes.getHead();
@@ -269,14 +271,16 @@ public void run() {
         int bloque = solicitud.getBloque();
         if (bloque != -1) {
             int distancia = Math.abs(bloque - cabezaAntes);
+            desplazamientoTotal += distancia; // <-- ACUMULAR
             cabezaActual = bloque;
             if (logListener != null) {
-                String mensaje = "Cabezal: " + cabezaAntes + " → " + bloque + " (dist " + distancia + ") - " + datos;
+                String nombreArchivo = (datos.getArchivo() != null) ? datos.getArchivo().getName() : datos.getNombreArchivo();
+                String mensaje = "Cabezal: " + cabezaAntes + " → " + bloque + " (dist " + distancia + ") - P" + datos.getId() + " [" + datos.getOperacion() + "] " + nombreArchivo;
                 logListener.onMovimiento(mensaje);
             }
         } else {
             if (logListener != null) {
-                String mensaje = "Operación sin bloque: " + datos + (exito ? " (éxito)" : " (fallo)");
+                String mensaje = "Operación sin bloque: " + datos.getOperacion() + " P" + datos.getId();
                 logListener.onMovimiento(mensaje);
             }
         }

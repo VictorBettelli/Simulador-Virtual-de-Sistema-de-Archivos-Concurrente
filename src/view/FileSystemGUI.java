@@ -2,6 +2,8 @@ package view;
 
 import javax.swing.*;
 import javax.swing.tree.*;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.table.DefaultTableCellRenderer;
 import java.awt.*;
 import java.awt.event.*;
 import model.FileSystemNode;
@@ -37,10 +39,6 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     private OperacionesArchivo operaciones;
     private LockManager lockManager;
     private LinkedList<ProcesoHilo> procesosActivos;
-    private DefaultListModel<Process> procesosModel;
-    private JList<Process> procesosList;
-    private DefaultListModel<String> solicitudesModel;
-    private JList<String> solicitudesList;
     private JComboBox<String> politicaCombo;
     private JLabel cabezaLabel;
     private JTextArea logArea;
@@ -55,7 +53,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     private JComboBox<String> userSelectorCombo;
     private JLabel currentModeLabel;
     
-    // Opcional: para mostrar locks
+    // Para mostrar locks
     private DefaultListModel<String> locksModel;
     private JList<String> locksList;
     
@@ -65,6 +63,26 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     // Controles de modo manual
     private JCheckBox chkModoManual;
     private JButton btnPaso;
+    
+    // --- Colas de procesos por estado ---
+    private DefaultListModel<Process> listosModel;
+    private JList<Process> listosList;
+    private DefaultListModel<Process> cpuModel;
+    private JList<Process> cpuList;
+    private DefaultListModel<Process> bloqueadosModel;
+    private JList<Process> bloqueadosList;
+    
+    // Solicitudes pendientes (cola de disco)
+    private DefaultListModel<String> solicitudesModel;
+    private JList<String> solicitudesList;
+    
+    // --- Tabla de asignación de archivos ---
+    private JTable tablaAsignacion;
+    private DefaultTableModel tablaModel;
+    
+    // --- Tabla de journaling ---
+    private DefaultTableModel journalModel;
+    private JTable journalTable;
     
     public FileSystemGUI() {
         userSession = new UserSession();      
@@ -84,6 +102,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         refreshTree();
         updateDiskView();
         actualizarVistaProcesos();
+        actualizarTablaAsignacion(); // Mostrar archivos iniciales
         actualizarPermisosInterfaz();
         
         // Timer para actualizar la GUI cada 500 ms
@@ -153,7 +172,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         JScrollPane treeScroll = new JScrollPane(fileTree);
         treePanel.add(treeScroll, BorderLayout.CENTER);
 
-        // Panel derecho con información
+        // Panel derecho con información, tabla y disco
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoPanel.setBorder(BorderFactory.createTitledBorder("Información del elemento"));
         infoArea = new JTextArea(10, 25);
@@ -161,9 +180,49 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         infoArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         infoPanel.add(new JScrollPane(infoArea), BorderLayout.CENTER);
 
-        // Panel para el disco
-        JPanel diskViewPanel = new JPanel(new BorderLayout());
-        diskViewPanel.setBorder(BorderFactory.createTitledBorder("Disco (bloques)"));
+        // --- Tabla de asignación ---
+        tablaModel = new DefaultTableModel(new String[]{"Nombre", "Bloques", "Primer Bloque", "Color"}, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+        tablaAsignacion = new JTable(tablaModel);
+        tablaAsignacion.setFillsViewportHeight(true);
+        tablaAsignacion.setRowHeight(22);
+        tablaAsignacion.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
+        tablaAsignacion.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+
+        // Renderizador para mostrar el color real en la columna "Color"
+        tablaAsignacion.getColumnModel().getColumn(3).setCellRenderer(new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(
+                    JTable table, Object value, boolean isSelected,
+                    boolean hasFocus, int row, int column) {
+
+                JLabel label = new JLabel();
+                label.setOpaque(true);
+
+                String nombre = (String) tablaModel.getValueAt(row, 0);
+                FileSystemNode nodo = buscarArchivo(root, nombre);
+
+                if (nodo != null && nodo.getColor() != null) {
+                    label.setBackground(nodo.getColor());
+                } else {
+                    label.setBackground(Color.WHITE);
+                }
+
+                label.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+
+                return label;
+            }
+        });
+
+        JScrollPane scrollTabla = new JScrollPane(tablaAsignacion);
+        scrollTabla.setBorder(BorderFactory.createTitledBorder("Tabla de Asignación"));
+        scrollTabla.setPreferredSize(new Dimension(400, 150));
+
+        // --- Panel del disco (matriz) ---
         diskPanel = new JPanel() {
             @Override
             protected void paintComponent(Graphics g) {
@@ -171,17 +230,55 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
                 drawDisk(g);
             }
         };
-        diskPanel.setPreferredSize(new Dimension(560, 560));
+        diskPanel.setPreferredSize(new Dimension(600, 600));
         diskPanel.setBackground(Color.WHITE);
-        diskViewPanel.add(new JScrollPane(diskPanel), BorderLayout.CENTER);
+        JScrollPane scrollDisco = new JScrollPane(diskPanel);
+        scrollDisco.setBorder(BorderFactory.createTitledBorder("Disco (bloques)"));
 
-        // Panel combinado derecho
-        JPanel rightPanel = new JPanel(new BorderLayout());
-        rightPanel.add(infoPanel, BorderLayout.CENTER);
-        rightPanel.add(diskViewPanel, BorderLayout.SOUTH);
+        // --- Tabla de journaling (nuevo panel a la derecha del disco) ---
+        journalModel = new DefaultTableModel(new String[]{"Operación", "Archivo", "Bloque", "Estado"}, 0);
+        journalTable = new JTable(journalModel);
+        journalTable.setRowHeight(22);
+        journalTable.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
+        journalTable.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        JScrollPane scrollJournal = new JScrollPane(journalTable);
+        scrollJournal.setBorder(BorderFactory.createTitledBorder("Journaling"));
 
-        // Split horizontal
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treePanel, rightPanel);
+        // Dividir el espacio del disco y el journal horizontalmente
+        JSplitPane diskSplit = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                scrollDisco,
+                scrollJournal
+        );
+        diskSplit.setResizeWeight(0.65); // 65% para el disco, 35% para journal
+
+        // Panel que contiene todo lo del disco (matriz + journal)
+        JPanel diskViewPanel = new JPanel(new BorderLayout());
+        diskViewPanel.setBorder(BorderFactory.createTitledBorder("Disco y Journal"));
+        diskViewPanel.add(diskSplit, BorderLayout.CENTER);
+
+        // ===== PANEL DERECHO COMPLETO =====
+        // Organizamos verticalmente: tabla de asignación, información, disco+journal
+        JSplitPane topRightSplit = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                scrollTabla,
+                infoPanel
+        );
+        topRightSplit.setResizeWeight(0.3);
+
+        JSplitPane rightPanel = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                topRightSplit,
+                diskViewPanel
+        );
+        rightPanel.setResizeWeight(0.35);
+
+        // Split horizontal principal
+        JSplitPane splitPane = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                treePanel,
+                rightPanel
+        );
         splitPane.setDividerLocation(300);
         add(splitPane, BorderLayout.CENTER);
 
@@ -216,7 +313,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         controlPanel.add(btnLoad);
         controlPanel.add(btnLoadTestCase);
 
-        // Panel de planificación (scheduler)
+        // ===== PANEL DE PLANIFICACIÓN Y COLAS =====
         JPanel schedulerPanel = new JPanel(new BorderLayout());
         schedulerPanel.setBorder(BorderFactory.createTitledBorder("Planificación de Disco"));
 
@@ -228,7 +325,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             int politica = politicaCombo.getSelectedIndex();
             scheduler.setPolitica(politica);
             actualizarVistaProcesos();
-            System.out.println("Política cambiada manualmente a: " + politica); // DEBUG
+            System.out.println("Política cambiada manualmente a: " + politica);
         });
         topSchedulerPanel.add(politicaCombo);
 
@@ -257,7 +354,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         desplazamientoLabel = new JLabel("  Desplazamiento total: 0");
         topSchedulerPanel.add(desplazamientoLabel);
 
-        // --- Controles de modo manual ---
+        // Controles de modo manual
         chkModoManual = new JCheckBox("Modo manual (paso a paso)");
         chkModoManual.addActionListener(e -> {
             if (scheduler != null) {
@@ -275,56 +372,39 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             }
         });
         topSchedulerPanel.add(btnPaso);
-        // ---------------------------------
 
-        // Panel de solicitudes pendientes
+        // Panel de solicitudes pendientes (cola de disco)
         solicitudesModel = new DefaultListModel<>();
         solicitudesList = new JList<>(solicitudesModel);
         JScrollPane scrollSolicitudes = new JScrollPane(solicitudesList);
         scrollSolicitudes.setBorder(BorderFactory.createTitledBorder("Solicitudes pendientes (cola de disco)"));
         scrollSolicitudes.setPreferredSize(new Dimension(400, 80));
 
-        // Panel de procesos activos
-        procesosModel = new DefaultListModel<>();
-        procesosList = new JList<>(procesosModel);
-        procesosList.setCellRenderer(new DefaultListCellRenderer() {
-            @Override
-            public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
-                JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-                panel.setOpaque(true);
-                if (value instanceof Process) {
-                    Process p = (Process) value;
-                    FileSystemNode archivo = p.getArchivo();
+        // --- Colas de procesos por estado ---
+        listosModel = new DefaultListModel<>();
+        listosList = new JList<>(listosModel);
+        listosList.setCellRenderer(crearProcesoCellRenderer());
+        JScrollPane scrollListos = new JScrollPane(listosList);
+        scrollListos.setBorder(BorderFactory.createTitledBorder("LISTOS"));
 
-                    JLabel colorLabel = new JLabel();
-                    colorLabel.setOpaque(true);
-                    colorLabel.setPreferredSize(new Dimension(12, 12));
-                    if (archivo != null && !archivo.isDirectory() && archivo.getColor() != null) {
-                        colorLabel.setBackground(archivo.getColor());
-                    } else {
-                        colorLabel.setBackground(Color.GRAY);
-                    }
-                    colorLabel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
-                    panel.add(colorLabel);
+        cpuModel = new DefaultListModel<>();
+        cpuList = new JList<>(cpuModel);
+        cpuList.setCellRenderer(crearProcesoCellRenderer());
+        JScrollPane scrollCPU = new JScrollPane(cpuList);
+        scrollCPU.setBorder(BorderFactory.createTitledBorder("EN CPU"));
 
-                    String texto = p.toString();
-                    JLabel textLabel = new JLabel(texto);
-                    panel.add(textLabel);
+        bloqueadosModel = new DefaultListModel<>();
+        bloqueadosList = new JList<>(bloqueadosModel);
+        bloqueadosList.setCellRenderer(crearProcesoCellRenderer());
+        JScrollPane scrollBloqueados = new JScrollPane(bloqueadosList);
+        scrollBloqueados.setBorder(BorderFactory.createTitledBorder("BLOQUEADOS"));
 
-                    if (isSelected) {
-                        panel.setBackground(list.getSelectionBackground());
-                        textLabel.setForeground(list.getSelectionForeground());
-                    } else {
-                        panel.setBackground(list.getBackground());
-                        textLabel.setForeground(list.getForeground());
-                    }
-                    return panel;
-                }
-                return super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-            }
-        });
-        JScrollPane scrollProcesos = new JScrollPane(procesosList);
-        scrollProcesos.setPreferredSize(new Dimension(400, 100));
+        // Panel que agrupa las tres colas
+        JPanel colasPanel = new JPanel(new GridLayout(1, 3, 5, 0));
+        colasPanel.add(scrollListos);
+        colasPanel.add(scrollCPU);
+        colasPanel.add(scrollBloqueados);
+        colasPanel.setPreferredSize(new Dimension(400, 120));
 
         // Área de log
         logArea = new JTextArea(8, 50);
@@ -344,8 +424,9 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         JPanel centerSchedulerPanel = new JPanel();
         centerSchedulerPanel.setLayout(new BoxLayout(centerSchedulerPanel, BoxLayout.Y_AXIS));
         centerSchedulerPanel.add(scrollSolicitudes);
-        centerSchedulerPanel.add(scrollProcesos);
+        centerSchedulerPanel.add(colasPanel);
         centerSchedulerPanel.add(scrollLog);
+        centerSchedulerPanel.add(scrollLocks);
 
         schedulerPanel.add(topSchedulerPanel, BorderLayout.NORTH);
         schedulerPanel.add(centerSchedulerPanel, BorderLayout.CENTER);
@@ -357,8 +438,55 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         add(southPanel, BorderLayout.SOUTH);
 
-        setSize(1100, 950);
+        setSize(1400, 950); // Un poco más ancho para el journal
         setLocationRelativeTo(null);
+    }
+
+    // Renderizador común para listas de procesos
+    private DefaultListCellRenderer crearProcesoCellRenderer() {
+        return new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
+                JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+                panel.setOpaque(true);
+                if (value instanceof Process) {
+                    Process p = (Process) value;
+                    FileSystemNode archivo = p.getArchivo();
+
+                    // Círculo de color
+                    JLabel colorLabel = new JLabel();
+                    colorLabel.setOpaque(true);
+                    colorLabel.setPreferredSize(new Dimension(12, 12));
+                    if (archivo != null && !archivo.isDirectory() && archivo.getColor() != null) {
+                        colorLabel.setBackground(archivo.getColor());
+                    } else {
+                        colorLabel.setBackground(Color.GRAY);
+                    }
+                    colorLabel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+                    panel.add(colorLabel);
+
+                    // Texto sin el estado
+                    String tipo = (archivo != null && archivo.isDirectory()) ? "DIR" : "FILE";
+                    String nombre = (archivo != null) ? archivo.getName() : p.getNombreArchivo();
+                    String texto = "P" + p.getId() + " [" + p.getOperacion() + " " + tipo + "] " + nombre;
+                    if (p.getOperacion().equals("UPDATE") && p.getNuevoNombre() != null) {
+                        texto += " → " + p.getNuevoNombre();
+                    }
+                    JLabel textLabel = new JLabel(texto);
+                    panel.add(textLabel);
+
+                    if (isSelected) {
+                        panel.setBackground(list.getSelectionBackground());
+                        textLabel.setForeground(list.getSelectionForeground());
+                    } else {
+                        panel.setBackground(list.getBackground());
+                        textLabel.setForeground(list.getForeground());
+                    }
+                    return panel;
+                }
+                return super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            }
+        };
     }
 
     // ===== MÉTODOS PARA CAMBIO DE MODO =====
@@ -469,6 +597,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             refreshTree();
             updateDiskView();
             actualizarVistaProcesos();
+            actualizarTablaAsignacion();
             
             JOptionPane.showMessageDialog(this, 
                 "Estado cargado exitosamente", 
@@ -665,6 +794,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
                     refreshTree();
                     updateDiskView();
                     actualizarVistaProcesos();
+                    actualizarTablaAsignacion();
 
                     logArea.append("📋 Caso de prueba cargado: " + testCase.getTestId() + "\n");
                     logArea.append("   Cabezal inicial: " + testCase.getInitialHead() + "\n");
@@ -687,40 +817,43 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     }
 
     private void reiniciarSistema() {
-    if (scheduler != null) {
-        scheduler.detener();
-        try {
-            scheduler.join(500); // Espera hasta 500ms a que termine
-        } catch (InterruptedException e) {
-            e.printStackTrace();
+        if (scheduler != null) {
+            scheduler.detener();
+            try {
+                scheduler.join(500);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
         }
+        disk = new Disk();
+        root = new FileSystemNode();
+        root.setName("/");
+        root.setOwner("admin");
+        root.setDirectory(true);
+        root.setParent(null);
+        root.setChildren(new LinkedList<>());
+
+        operaciones = new OperacionesArchivo(disk, root);
+        scheduler = new Scheduler(disk, operaciones, this);
+        
+        int politicaSeleccionada = politicaCombo.getSelectedIndex();
+        scheduler.setPolitica(politicaSeleccionada);
+        System.out.println("Reiniciando sistema con política: " + politicaSeleccionada);
+        
+        scheduler.setModoManual(chkModoManual.isSelected());
+        scheduler.start();
+
+        procesosActivos = new LinkedList<>();
+        lockManager = new LockManager();
+
+        logArea.setText("");
+        btnPaso.setEnabled(chkModoManual.isSelected());
+        
+        // Actualizar tabla (vacía al reiniciar)
+        actualizarTablaAsignacion();
+        // Limpiar journal
+        journalModel.setRowCount(0);
     }
-    disk = new Disk();
-    root = new FileSystemNode();
-    root.setName("/");
-    root.setOwner("admin");
-    root.setDirectory(true);
-    root.setParent(null);
-    root.setChildren(new LinkedList<>());
-
-    operaciones = new OperacionesArchivo(disk, root);
-    scheduler = new Scheduler(disk, operaciones, this);
-    
-    // Establecer la política según el combo (CRUCIAL)
-    int politicaSeleccionada = politicaCombo.getSelectedIndex();
-    scheduler.setPolitica(politicaSeleccionada);
-    System.out.println("Reiniciando sistema con política: " + politicaSeleccionada); // DEBUG
-    
-    // Establecer modo manual
-    scheduler.setModoManual(chkModoManual.isSelected());
-    scheduler.start();
-
-    procesosActivos = new LinkedList<>();
-    lockManager = new LockManager();
-
-    logArea.setText("");
-    btnPaso.setEnabled(chkModoManual.isSelected());
-}
 
     private void createDirectory(FileSystemNode parent, String name, String owner) {
         if (parent == null || !parent.isDirectory()) return;
@@ -854,35 +987,51 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
     // ----- Métodos para actualizar vistas -----
     private void actualizarVistaProcesos() {
-        SwingUtilities.invokeLater(() -> {
-            // Actualizar procesos activos
-            procesosModel.clear();
-            synchronized (procesosActivos) {
-                Node<ProcesoHilo> current = procesosActivos.getHead();
-                while (current != null) {
-                    procesosModel.addElement(current.data.getDatosProceso());
-                    current = current.next;
+    SwingUtilities.invokeLater(() -> {
+        // Limpiar todas las listas
+        listosModel.clear();
+        cpuModel.clear();
+        bloqueadosModel.clear();
+
+        synchronized (procesosActivos) {
+            Node<ProcesoHilo> current = procesosActivos.getHead();
+            while (current != null) {
+                Process p = current.data.getDatosProceso();
+                String estado = p.getEstado();
+                if ("LISTO".equals(estado) || "NUEVO".equals(estado)) {
+                    listosModel.addElement(p);
+                } else if ("EJECUTANDO".equals(estado)) {
+                    cpuModel.addElement(p);
+                } else if ("BLOQUEADO".equals(estado)) {
+                    bloqueadosModel.addElement(p);
                 }
+                // Los terminados no se muestran
+                current = current.next;
             }
-            
-            // Actualizar cabezal
-            cabezaLabel.setText("Cabezal: " + (scheduler != null ? scheduler.getCabezaActual() : 0));
-            
-            // Actualizar solicitudes pendientes
-            if (scheduler != null) {
-                LinkedList<String> pendientes = scheduler.getSolicitudesPendientes();
-                solicitudesModel.clear();
-                Node<String> currentPend = pendientes.getHead();
-                while (currentPend != null) {
-                    solicitudesModel.addElement(currentPend.data);
-                    currentPend = currentPend.next;
-                }
+        }
+        
+        // Actualizar cabezal y desplazamiento total
+        cabezaLabel.setText("Cabezal: " + (scheduler != null ? scheduler.getCabezaActual() : 0));
+        if (scheduler != null) {
+            desplazamientoTotal = scheduler.getDesplazamientoTotal(); // Tomamos el valor del scheduler
+        }
+        desplazamientoLabel.setText("  Desplazamiento total: " + desplazamientoTotal);
+        
+        // Actualizar solicitudes pendientes
+        if (scheduler != null) {
+            LinkedList<String> pendientes = scheduler.getSolicitudesPendientes();
+            solicitudesModel.clear();
+            Node<String> currentPend = pendientes.getHead();
+            while (currentPend != null) {
+                solicitudesModel.addElement(currentPend.data);
+                currentPend = currentPend.next;
             }
-            
-            // Actualizar locks
-            actualizarLocksView();
-        });
-    }
+        }
+        
+        // Actualizar locks
+        actualizarLocksView();
+    });
+}
 
     private void actualizarLocksView() {
         if (locksModel != null && lockManager != null) {
@@ -900,6 +1049,69 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         desplazamientoLabel.setText("  Desplazamiento total: " + desplazamientoTotal);
     }
 
+    // ----- Métodos para la tabla de asignación -----
+    private void actualizarTablaAsignacion() {
+        SwingUtilities.invokeLater(() -> {
+            tablaModel.setRowCount(0);
+            recorrerYAgregarArchivos(root);
+        });
+    }
+
+    private void recorrerYAgregarArchivos(FileSystemNode nodo) {
+        if (!nodo.isDirectory()) {
+            tablaModel.addRow(new Object[]{
+                nodo.getName(),
+                nodo.getSizeInBlocks(),
+                nodo.getFirstBlock(),
+                "" // El color se muestra mediante renderer, no necesitamos texto
+            });
+        } else {
+            if (nodo.getChildren() != null) {
+                Node<FileSystemNode> current = nodo.getChildren().getHead();
+                while (current != null) {
+                    recorrerYAgregarArchivos(current.data);
+                    current = current.next;
+                }
+            }
+        }
+    }
+
+    // ----- Método auxiliar para buscar un archivo por nombre -----
+    private FileSystemNode buscarArchivo(FileSystemNode nodo, String nombre) {
+        if (!nodo.isDirectory()) {
+            if (nodo.getName().equals(nombre)) {
+                return nodo;
+            }
+        }
+
+        if (nodo.getChildren() != null) {
+            Node<FileSystemNode> current = nodo.getChildren().getHead();
+
+            while (current != null) {
+                FileSystemNode encontrado = buscarArchivo(current.data, nombre);
+
+                if (encontrado != null) {
+                    return encontrado;
+                }
+
+                current = current.next;
+            }
+        }
+
+        return null;
+    }
+
+    // ----- Método para añadir entradas al journal -----
+    public void agregarEntradaJournal(String operacion, String archivo, int bloque, String estado) {
+        SwingUtilities.invokeLater(() -> {
+            journalModel.addRow(new Object[]{operacion, archivo, bloque, estado});
+            // Mantener solo las últimas 20 entradas para no saturar
+            if (journalModel.getRowCount() > 20) {
+                journalModel.removeRow(0);
+            }
+        });
+    }
+
     // ----- Implementación de Terminable -----
     @Override
     public void onTerminate(ProcesoHilo hilo) {
@@ -910,6 +1122,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             refreshTree();
             updateDiskView();
             actualizarVistaProcesos();
+            actualizarTablaAsignacion();
         });
     }
 

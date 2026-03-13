@@ -32,11 +32,13 @@ public class ProcesoHilo extends Thread {
 
     public Process getDatosProceso() { return datosProceso; }
 
-    @Override
+@Override
 public void run() {
     datosProceso.setEstado("NUEVO");
     try {
         datosProceso.setEstado("LISTO");
+        Thread.sleep(1000); // Permite ver el estado LISTO en la GUI
+
         boolean esLectura = datosProceso.getOperacion().equals("READ");
         if (esLectura) {
             lock.readLock();
@@ -44,16 +46,19 @@ public void run() {
             lock.writeLock();
         }
         datosProceso.setEstado("EJECUTANDO");
+        Thread.sleep(1000); // Permite ver el estado EJECUTANDO antes de enviar la solicitud
 
         int bloque = datosProceso.getBloqueParaPlanificacion();
         SolicitudES solicitud = new SolicitudES(this, bloque, datosProceso.getOperacion());
         scheduler.agregarSolicitud(solicitud);
 
-        datosProceso.setEstado("BLOQUEADO"); // Esperando al disco
+        datosProceso.setEstado("BLOQUEADO");
         synchronized (this) {
-            wait();
+            wait(); // Espera a que el scheduler lo despierte
         }
-        datosProceso.setEstado("EJECUTANDO"); // Vuelve a ejecutarse
+
+        datosProceso.setEstado("EJECUTANDO"); // Vuelve a ejecutarse brevemente
+        // No añadimos sleep aquí porque es muy breve y luego termina
 
         if (esLectura) {
             lock.readUnlock();
