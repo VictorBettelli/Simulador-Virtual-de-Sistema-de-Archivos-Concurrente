@@ -75,79 +75,78 @@ public class TestCaseLoader {
         }
     }
 
-    public static void aplicarTestCase(TestCase testCase, FileSystemNode root, Disk disk, Scheduler scheduler) {
-    if (testCase == null) return;
+    public static void aplicarTestCase(TestCase testCase, FileSystemNode root, Disk disk, Scheduler scheduler, LinkedList<Process> procesosCreados) {
+        if (testCase == null) return;
 
-    scheduler.setCabezaActual(testCase.getInitialHead());
+        scheduler.setCabezaActual(testCase.getInitialHead());
 
-    FileSystemNode[] bloqueAFile = new FileSystemNode[Disk.SIZE];
+        FileSystemNode[] bloqueAFile = new FileSystemNode[Disk.SIZE];
 
-    // 1. Crear archivos del sistema (system_files)
-    TestCase.SystemFiles systemFiles = testCase.getSystemFiles();
-    if (systemFiles != null) {
-        LinkedList<TestCase.SystemFiles.FileEntry> entries = systemFiles.getFiles(); // Asegúrate de que este getter existe
-        if (entries != null) {
-            Node<TestCase.SystemFiles.FileEntry> current = entries.getHead();
-            while (current != null) {
-                TestCase.SystemFiles.FileEntry entry = current.data;
-                int bloqueInicial = entry.getBlock();
-                String nombre = entry.getName(); // nombre original del JSON
-                int cantidad = entry.getBlocks();
+        // 1. Crear archivos del sistema (system_files)
+        TestCase.SystemFiles systemFiles = testCase.getSystemFiles();
+        if (systemFiles != null) {
+            LinkedList<TestCase.SystemFiles.FileEntry> entries = systemFiles.getFiles();
+            if (entries != null) {
+                Node<TestCase.SystemFiles.FileEntry> current = entries.getHead();
+                while (current != null) {
+                    TestCase.SystemFiles.FileEntry entry = current.data;
+                    int bloqueInicial = entry.getBlock();
+                    String nombre = entry.getName();
+                    int cantidad = entry.getBlocks();
 
-                FileSystemNode fileNode = new FileSystemNode();
-                fileNode.setName(nombre); // Se asigna el nombre original
-                fileNode.setOwner("system");
-                fileNode.setDirectory(false);
-                fileNode.setSizeInBlocks(cantidad);
-                fileNode.setParent(root);
+                    FileSystemNode fileNode = new FileSystemNode();
+                    fileNode.setName(nombre);
+                    fileNode.setOwner("system");
+                    fileNode.setDirectory(false);
+                    fileNode.setSizeInBlocks(cantidad);
+                    fileNode.setParent(root);
 
-                Color color = disk.generateUniqueColor();
-                boolean ok = disk.asignarBloquesExactos(bloqueInicial, cantidad, color);
-                if (!ok) {
-                    System.err.println("Error al asignar bloques para " + nombre);
+                    Color color = disk.generateUniqueColor();
+                    boolean ok = disk.asignarBloquesExactos(bloqueInicial, cantidad, color);
+                    if (!ok) {
+                        System.err.println("Error al asignar bloques para " + nombre);
+                        current = current.next;
+                        continue;
+                    }
+                    fileNode.setFirstBlock(bloqueInicial);
+                    fileNode.setColor(color);
+
+                    if (root.getChildren() == null) root.setChildren(new LinkedList<>());
+                    root.getChildren().add(fileNode);
+
+                    for (int i = 0; i < cantidad; i++) {
+                        bloqueAFile[bloqueInicial + i] = fileNode;
+                    }
+
                     current = current.next;
-                    continue;
                 }
-                fileNode.setFirstBlock(bloqueInicial);
-                fileNode.setColor(color);
+            }
+        }
 
-                if (root.getChildren() == null) root.setChildren(new LinkedList<>());
-                root.getChildren().add(fileNode);
+        // 2. Crear procesos a partir de las solicitudes (requests)
+        LinkedList<TestCase.Request> requests = testCase.getRequests();
+        if (requests != null) {
+            Node<TestCase.Request> current = requests.getHead();
+            while (current != null) {
+                TestCase.Request req = current.data;
+                int bloque = req.getPos();
+                String operacion = req.getOp();
 
-                for (int i = 0; i < cantidad; i++) {
-                    bloqueAFile[bloqueInicial + i] = fileNode;
+                FileSystemNode archivo = bloqueAFile[bloque];
+                if (archivo == null) {
+                    archivo = new FileSystemNode();
+                    archivo.setName("temp_" + bloque);
+                    archivo.setDirectory(false);
                 }
+
+                Process p = new Process(operacion, archivo, "test");
+                p.setBloqueSolicitado(bloque);
+                procesosCreados.add(p);  // Ya no se agrega al scheduler directamente
 
                 current = current.next;
             }
         }
+
+        System.out.println("✅ Caso de prueba aplicado: " + testCase.getTestId());
     }
-
-    // 2. Crear procesos a partir de las solicitudes (requests)
-    LinkedList<TestCase.Request> requests = testCase.getRequests();
-    if (requests != null) {
-        Node<TestCase.Request> current = requests.getHead();
-        while (current != null) {
-            TestCase.Request req = current.data;
-            int bloque = req.getPos();
-            String operacion = req.getOp(); // "READ", "UPDATE", etc.
-
-            FileSystemNode archivo = bloqueAFile[bloque];
-            if (archivo == null) {
-                // Si no hay archivo asociado, se crea uno temporal (no afecta el sistema)
-                archivo = new FileSystemNode();
-                archivo.setName("temp_" + bloque); // Esto es solo para el proceso, no para el árbol
-                archivo.setDirectory(false);
-            }
-
-            Process p = new Process(operacion, archivo, "test");
-            p.setBloqueSolicitado(bloque);
-            scheduler.agregarProceso(p);
-
-            current = current.next;
-        }
-    }
-
-    System.out.println("✅ Caso de prueba aplicado: " + testCase.getTestId());
-}
 }
