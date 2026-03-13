@@ -3,18 +3,23 @@
     <editor-bookmarks xmlns="http://www.netbeans.org/ns/editor-bookmarks/2" lastBookmarkId="0"/>
     <open-files xmlns="http://www.netbeans.org/ns/projectui-open-files/2">
         <group>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/test/TestFileSystem.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/util/LinkedList.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/util/Node.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/model/FileSystemNode.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/view/FileSystemGUI.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/test/TestCase.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/config/UserSession.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/controller/NewClass.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/model/Process.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/persistence/FileSystemPersistence.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/model/Scheduler.java</file>
-            <file>file:/C:/Users/luisf/Desktop/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/Simulador-Virtual-de-Sistema-de-Archivos-Concurrente/src/test/TestCaseLoader.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/controller/NewClass.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/FileSystemNode.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/view/FileSystemGUI.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/util/Node.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/util/LinkedList.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/test/TestCase.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/Disk.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/test/TestCaseLoader.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/Scheduler.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/Process.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/SolicitudES.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/ProcesoHilo.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/RWLock.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/LockManager.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/OperacionesArchivo.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/Terminable.java</file>
+            <file>file:/C:/Users/luisf/OneDrive/Escritorio/proyectos%20Netbeans/SVSAC/src/model/LogListener.java</file>
         </group>
     </open-files>
 </project-private>

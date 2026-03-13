@@ -22,10 +22,13 @@ public class Process {
     private String nombreArchivo; // para cuando el archivo aún no existe (CREATE)
     private FileSystemNode padre; // directorio padre para CREATE
     private String nuevoNombre; // para UPDATE
-    
+    private static int contadorOrden = 0;
+    private int orden;
     // Constructor para operaciones sobre archivo existente
     public Process(String operacion, FileSystemNode archivo, String owner) {
         this.id = contadorId++;
+        synchronized (Process.class) {
+        orden = ++contadorOrden;}
         this.estado = "NUEVO";
         this.operacion = operacion;
         this.archivo = archivo;
@@ -40,6 +43,8 @@ public class Process {
     // Constructor para operación CREATE
     public Process(String operacion, String nombreArchivo, String owner, int tamanio, FileSystemNode padre) {
         this.id = contadorId++;
+        synchronized (Process.class) {
+        orden = ++contadorOrden;}
         this.estado = "NUEVO";
         this.operacion = operacion;
         this.owner = owner;
@@ -69,7 +74,7 @@ public class Process {
     public void setPadre(FileSystemNode padre) { this.padre = padre; }
     public String getNuevoNombre() { return nuevoNombre; }
     public void setNuevoNombre(String nuevoNombre) { this.nuevoNombre = nuevoNombre; }
-    
+    public int getOrden() { return orden; }
     // Obtener el bloque principal para planificación
     public int getBloqueParaPlanificacion() {
         if (bloqueSolicitado != -1) return bloqueSolicitado;
@@ -84,13 +89,13 @@ public class Process {
     public static void setContadorId(int id) { contadorId = id; }
     
     @Override
-    public String toString() {
-        String tipo = (archivo != null && archivo.isDirectory()) ? "DIR" : "FILE";
-        String nombre = (archivo != null) ? archivo.getName() : nombreArchivo;
-        String base = "P" + id + " [" + operacion + " " + tipo + "] " + nombre + " - " + estado;
-        if (operacion.equals("UPDATE") && nuevoNombre != null) {
-            base += " → " + nuevoNombre;
-        }
-        return base;
+public String toString() {
+    String tipo = (archivo != null && archivo.isDirectory()) ? "DIR" : "FILE";
+    String nombre = (archivo != null) ? archivo.getName() : nombreArchivo;
+    String base = "P" + id + " [" + operacion + " " + tipo + "] " + nombre + " - " + estado;
+    if (operacion.equals("UPDATE") && nuevoNombre != null) {
+        base += " → " + nuevoNombre;
     }
+    return base;
+}
 }

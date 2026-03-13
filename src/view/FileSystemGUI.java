@@ -2,12 +2,20 @@ package view;
 
 import javax.swing.*;
 import javax.swing.tree.*;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.table.DefaultTableCellRenderer;
 import java.awt.*;
 import java.awt.event.*;
 import model.FileSystemNode;
 import model.Disk;
 import model.Process;
 import model.Scheduler;
+import model.OperacionesArchivo;
+import model.LockManager;
+import model.ProcesoHilo;
+import model.RWLock;
+import model.Terminable;
+import model.LogListener;
 import util.LinkedList;
 import util.Node;
 import config.UserSession;
@@ -16,10 +24,9 @@ import test.TestCase;
 import test.TestCaseLoader;
 import javax.swing.JFileChooser;
 import javax.swing.filechooser.FileNameExtensionFilter;
-import java.io.File;
 import persistence.FileSystemPersistence;
 
-public class FileSystemGUI extends JFrame {
+public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     private JTree fileTree;
     private DefaultTreeModel treeModel;
     private JTextArea infoArea;
@@ -29,12 +36,12 @@ public class FileSystemGUI extends JFrame {
     
     // Atributos para planificación
     private Scheduler scheduler;
-    private DefaultListModel<Process> procesosModel;
-    private JList<Process> procesosList;
+    private OperacionesArchivo operaciones;
+    private LockManager lockManager;
+    private LinkedList<ProcesoHilo> procesosActivos;
     private JComboBox<String> politicaCombo;
     private JLabel cabezaLabel;
-    private JButton btnEjecutar;
-    private JTextArea logArea; // Área de log para movimientos
+    private JTextArea logArea;
     private int desplazamientoTotal;
     private JLabel desplazamientoLabel;
     private JSpinner cabezaSpinner;
@@ -44,260 +51,445 @@ public class FileSystemGUI extends JFrame {
     private UserSession userSession;           
     private JComboBox<String> userModeCombo;   
     private JComboBox<String> userSelectorCombo;
-    private JLabel currentModeLabel;           
+    private JLabel currentModeLabel;
+    
+    // Para mostrar locks
+    private DefaultListModel<String> locksModel;
+    private JList<String> locksList;
+    
+    // Timer para actualización automática
+    private Timer updateTimer;
+    
+    // Controles de modo manual
+    private JCheckBox chkModoManual;
+    private JButton btnPaso;
+    
+    // --- Colas de procesos por estado ---
+    private DefaultListModel<Process> listosModel;
+    private JList<Process> listosList;
+    private DefaultListModel<Process> cpuModel;
+    private JList<Process> cpuList;
+    private DefaultListModel<Process> bloqueadosModel;
+    private JList<Process> bloqueadosList;
+    
+    // Solicitudes pendientes (cola de disco)
+    private DefaultListModel<String> solicitudesModel;
+    private JList<String> solicitudesList;
+    
+    // --- Tabla de asignación de archivos ---
+    private JTable tablaAsignacion;
+    private DefaultTableModel tablaModel;
+    
+    // --- Tabla de journaling ---
+    private DefaultTableModel journalModel;
+    private JTable journalTable;
     
     public FileSystemGUI() {
         userSession = new UserSession();      
         disk = new Disk();
-        scheduler = new Scheduler(disk);
         desplazamientoTotal = 0;
         initComponents();
         initFileSystem();
+        
+        // Crear operaciones y scheduler después de tener root
+        operaciones = new OperacionesArchivo(disk, root);
+        scheduler = new Scheduler(disk, operaciones, this);
+        scheduler.start(); // Inicia el hilo del scheduler
+        
+        lockManager = new LockManager();
+        procesosActivos = new LinkedList<>();
+        
         refreshTree();
         updateDiskView();
         actualizarVistaProcesos();
-       
+        actualizarTablaAsignacion(); // Mostrar archivos iniciales
         actualizarPermisosInterfaz();
+        
+        // Timer para actualizar la GUI cada 500 ms
+        updateTimer = new Timer(500, e -> actualizarVistaProcesos());
+        updateTimer.start();
     }
 
     private void initComponents() {
-    setTitle("Simulador de Sistema de Archivos");
-    setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-    setLayout(new BorderLayout());
+        setTitle("Simulador de Sistema de Archivos");
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLayout(new BorderLayout());
 
-    // ===== PANEL SUPERIOR - SELECTOR DE MODO =====
-    JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-    topPanel.setBorder(BorderFactory.createEtchedBorder());
+        // ===== PANEL SUPERIOR - SELECTOR DE MODO =====
+        JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        topPanel.setBorder(BorderFactory.createEtchedBorder());
 
-    topPanel.add(new JLabel("Modo:"));
-    userModeCombo = new JComboBox<>(new String[]{"Administrador", "Usuario"});
-    userModeCombo.addActionListener(e -> cambiarModo());
-    topPanel.add(userModeCombo);
+        topPanel.add(new JLabel("Modo:"));
+        userModeCombo = new JComboBox<>(new String[]{"Administrador", "Usuario"});
+        userModeCombo.addActionListener(e -> cambiarModo());
+        topPanel.add(userModeCombo);
 
-    topPanel.add(new JLabel("  Usuario:"));
-    userSelectorCombo = new JComboBox<>();
-    for (String user : UserSession.USERS) {
-        userSelectorCombo.addItem(user);
-    }
-    userSelectorCombo.addActionListener(e -> cambiarUsuario());
-    userSelectorCombo.setEnabled(false);
-    topPanel.add(userSelectorCombo);
+        topPanel.add(new JLabel("  Usuario:"));
+        userSelectorCombo = new JComboBox<>();
+        for (String user : UserSession.USERS) {
+            userSelectorCombo.addItem(user);
+        }
+        userSelectorCombo.addActionListener(e -> cambiarUsuario());
+        userSelectorCombo.setEnabled(false);
+        topPanel.add(userSelectorCombo);
 
-    currentModeLabel = new JLabel("  " + userSession.getModeDisplay());
-    topPanel.add(currentModeLabel);
+        currentModeLabel = new JLabel("  " + userSession.getModeDisplay());
+        topPanel.add(currentModeLabel);
 
-    add(topPanel, BorderLayout.NORTH);
+        add(topPanel, BorderLayout.NORTH);
 
-    // Panel izquierdo con el árbol
-    JPanel treePanel = new JPanel(new BorderLayout());
-    treePanel.setBorder(BorderFactory.createTitledBorder("Estructura de Archivos"));
-    treePanel.setPreferredSize(new Dimension(300, 500));
+        // Panel izquierdo con el árbol
+        JPanel treePanel = new JPanel(new BorderLayout());
+        treePanel.setBorder(BorderFactory.createTitledBorder("Estructura de Archivos"));
+        treePanel.setPreferredSize(new Dimension(300, 500));
 
-    DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode("Raíz (/)");
-    treeModel = new DefaultTreeModel(rootNode);
-    fileTree = new JTree(treeModel);
-    fileTree.addTreeSelectionListener(e -> showFileInfo());
+        DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode("Raíz (/)");
+        treeModel = new DefaultTreeModel(rootNode);
+        fileTree = new JTree(treeModel);
+        fileTree.addTreeSelectionListener(e -> showFileInfo());
 
-    // --- RENDERIZADOR PARA DIFERENCIAR DIRECTORIOS Y ARCHIVOS ---
-    fileTree.setCellRenderer(new DefaultTreeCellRenderer() {
-        @Override
-        public Component getTreeCellRendererComponent(JTree tree, Object value, boolean sel, boolean expanded, boolean leaf, int row, boolean hasFocus) {
-            super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
-            if (value instanceof DefaultMutableTreeNode) {
-                DefaultMutableTreeNode node = (DefaultMutableTreeNode) value;
-                Object userObj = node.getUserObject();
-                if (userObj instanceof FileSystemNode) {
-                    FileSystemNode fsNode = (FileSystemNode) userObj;
-                    if (fsNode.isDirectory()) {
-                        setText("📁 " + fsNode.getName());
-                    } else {
-                        setText("📄 " + fsNode.getName());
+        // Renderizador para diferenciar directorios y archivos
+        fileTree.setCellRenderer(new DefaultTreeCellRenderer() {
+            @Override
+            public Component getTreeCellRendererComponent(JTree tree, Object value, boolean sel, boolean expanded, boolean leaf, int row, boolean hasFocus) {
+                super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
+                if (value instanceof DefaultMutableTreeNode) {
+                    DefaultMutableTreeNode node = (DefaultMutableTreeNode) value;
+                    Object userObj = node.getUserObject();
+                    if (userObj instanceof FileSystemNode) {
+                        FileSystemNode fsNode = (FileSystemNode) userObj;
+                        if (fsNode.isDirectory()) {
+                            setText("📁 " + fsNode.getName());
+                        } else {
+                            setText("📄 " + fsNode.getName());
+                        }
                     }
                 }
+                return this;
             }
-            return this;
-        }
-    });
-    // -----------------------------------------------------------
+        });
 
-    JScrollPane treeScroll = new JScrollPane(fileTree);
-    treePanel.add(treeScroll, BorderLayout.CENTER);
+        JScrollPane treeScroll = new JScrollPane(fileTree);
+        treePanel.add(treeScroll, BorderLayout.CENTER);
 
-    // Panel derecho con información
-    JPanel infoPanel = new JPanel(new BorderLayout());
-    infoPanel.setBorder(BorderFactory.createTitledBorder("Información del elemento"));
-    infoArea = new JTextArea(10, 25);
-    infoArea.setEditable(false);
-    infoArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
-    infoPanel.add(new JScrollPane(infoArea), BorderLayout.CENTER);
+        // Panel derecho con información, tabla y disco
+        JPanel infoPanel = new JPanel(new BorderLayout());
+        infoPanel.setBorder(BorderFactory.createTitledBorder("Información del elemento"));
+        infoArea = new JTextArea(10, 25);
+        infoArea.setEditable(false);
+        infoArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        infoPanel.add(new JScrollPane(infoArea), BorderLayout.CENTER);
 
-    // Panel para el disco
-    JPanel diskViewPanel = new JPanel(new BorderLayout());
-    diskViewPanel.setBorder(BorderFactory.createTitledBorder("Disco (bloques)"));
-    diskPanel = new JPanel() {
-        @Override
-        protected void paintComponent(Graphics g) {
-            super.paintComponent(g);
-            drawDisk(g);
-        }
-    };
-    diskPanel.setPreferredSize(new Dimension(300, 300));
-    diskPanel.setBackground(Color.WHITE);
-    diskViewPanel.add(new JScrollPane(diskPanel), BorderLayout.CENTER);
-
-    // Panel combinado derecho
-    JPanel rightPanel = new JPanel(new BorderLayout());
-    rightPanel.add(infoPanel, BorderLayout.CENTER);
-    rightPanel.add(diskViewPanel, BorderLayout.SOUTH);
-
-    // Split horizontal
-    JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treePanel, rightPanel);
-    splitPane.setDividerLocation(300);
-    add(splitPane, BorderLayout.CENTER);
-
-    // Panel de control (acciones)
-    JPanel controlPanel = new JPanel(new FlowLayout());
-    controlPanel.setBorder(BorderFactory.createTitledBorder("Acciones"));
-
-    JButton btnCreateDir = new JButton("Crear Directorio");
-    JButton btnCreateFile = new JButton("Crear Archivo");
-    JButton btnUpdate = new JButton("Modificar Nombre");
-    JButton btnDelete = new JButton("Eliminar");
-    JButton btnRefresh = new JButton("Refrescar");
-    JButton btnSave = new JButton("💾 Guardar");      
-    JButton btnLoad = new JButton("📂 Cargar"); 
-    JButton btnLoadTestCase = new JButton("📋 Cargar Caso Prueba");
-
-    btnCreateDir.addActionListener(e -> solicitarCrearDirectorio());
-    btnCreateFile.addActionListener(e -> solicitarCrearArchivo());
-    btnUpdate.addActionListener(e -> solicitarModificarNombre());
-    btnDelete.addActionListener(e -> solicitarEliminar());
-    btnRefresh.addActionListener(e -> refreshTree());
-    btnSave.addActionListener(e -> guardarEstado());   
-    btnLoad.addActionListener(e -> cargarEstado());
-    btnLoadTestCase.addActionListener(e -> cargarCasoPrueba());
-
-    controlPanel.add(btnCreateDir);
-    controlPanel.add(btnCreateFile);
-    controlPanel.add(btnUpdate);
-    controlPanel.add(btnDelete);
-    controlPanel.add(btnRefresh);
-    controlPanel.add(btnSave);   
-    controlPanel.add(btnLoad);
-    controlPanel.add(btnLoadTestCase);
-
-    // Panel de planificación (scheduler)
-    JPanel schedulerPanel = new JPanel(new BorderLayout());
-    schedulerPanel.setBorder(BorderFactory.createTitledBorder("Planificación de Disco"));
-
-    // Panel superior del scheduler
-    JPanel topSchedulerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-    topSchedulerPanel.add(new JLabel("Política:"));
-    politicaCombo = new JComboBox<>(new String[]{"FIFO", "SSTF", "SCAN", "C-SCAN"});
-    politicaCombo.addActionListener(e -> {
-        int politica = politicaCombo.getSelectedIndex();
-        scheduler.setPolitica(politica);
-        actualizarVistaProcesos();
-    });
-    topSchedulerPanel.add(politicaCombo);
-
-    cabezaLabel = new JLabel("Cabezal: " + scheduler.getCabezaActual());
-    topSchedulerPanel.add(cabezaLabel);
-
-    topSchedulerPanel.add(new JLabel("  Pos. inicial:"));
-    SpinnerNumberModel spinnerModel = new SpinnerNumberModel(0, 0, Disk.SIZE - 1, 1);
-    cabezaSpinner = new JSpinner(spinnerModel);
-    cabezaSpinner.setPreferredSize(new Dimension(60, 25));
-    topSchedulerPanel.add(cabezaSpinner);
-
-    btnSetCabeza = new JButton("Establecer");
-    btnSetCabeza.addActionListener(e -> {
-        int nuevaPos = (int) cabezaSpinner.getValue();
-        scheduler.setCabezaActual(nuevaPos);
-        cabezaLabel.setText("Cabezal: " + scheduler.getCabezaActual());
-        desplazamientoTotal = 0;
-        actualizarDesplazamiento();
-        actualizarVistaProcesos();
-    });
-    topSchedulerPanel.add(btnSetCabeza);
-
-    desplazamientoLabel = new JLabel("  Desplazamiento total: 0");
-    topSchedulerPanel.add(desplazamientoLabel);
-
-    btnEjecutar = new JButton("Ejecutar siguiente");
-    btnEjecutar.addActionListener(e -> ejecutarSiguienteProceso());
-    topSchedulerPanel.add(btnEjecutar);
-
-    // Panel de cola de procesos con círculo de color
-    procesosModel = new DefaultListModel<>();
-    procesosList = new JList<>(procesosModel);
-    procesosList.setCellRenderer(new DefaultListCellRenderer() {
-        @Override
-        public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
-            JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-            panel.setOpaque(true);
-            if (value instanceof Process) {
-                Process p = (Process) value;
-                FileSystemNode archivo = p.getArchivo();
-
-                JLabel colorLabel = new JLabel();
-                colorLabel.setOpaque(true);
-                colorLabel.setPreferredSize(new Dimension(12, 12));
-                if (archivo != null && !archivo.isDirectory() && archivo.getColor() != null) {
-                    colorLabel.setBackground(archivo.getColor());
-                } else {
-                    colorLabel.setBackground(Color.GRAY);
-                }
-                colorLabel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
-                panel.add(colorLabel);
-
-                int bloque = scheduler.getBloqueSolicitado(p);
-                int distancia = Math.abs(bloque - scheduler.getCabezaActual());
-                String texto = p.toString() + " | Bloque: " + (bloque == -1 ? "N/A" : bloque) + " | Dist: " + (bloque == -1 ? "-" : distancia);
-                JLabel textLabel = new JLabel(texto);
-                panel.add(textLabel);
-
-                if (isSelected) {
-                    panel.setBackground(list.getSelectionBackground());
-                    textLabel.setForeground(list.getSelectionForeground());
-                } else {
-                    panel.setBackground(list.getBackground());
-                    textLabel.setForeground(list.getForeground());
-                }
-                return panel;
+        // --- Tabla de asignación ---
+        tablaModel = new DefaultTableModel(new String[]{"Nombre", "Bloques", "Primer Bloque", "Color"}, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
             }
-            return super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-        }
-    });
-    JScrollPane scrollProcesos = new JScrollPane(procesosList);
-    scrollProcesos.setPreferredSize(new Dimension(400, 100));
+        };
+        tablaAsignacion = new JTable(tablaModel);
+        tablaAsignacion.setFillsViewportHeight(true);
+        tablaAsignacion.setRowHeight(22);
+        tablaAsignacion.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
+        tablaAsignacion.setFont(new Font("Segoe UI", Font.PLAIN, 12));
 
-    // Área de log
-    logArea = new JTextArea(8, 50);
-    logArea.setEditable(false);
-    logArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
-    JScrollPane scrollLog = new JScrollPane(logArea);
-    scrollLog.setBorder(BorderFactory.createTitledBorder("Log de movimientos"));
+        // Renderizador para mostrar el color real en la columna "Color"
+        tablaAsignacion.getColumnModel().getColumn(3).setCellRenderer(new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(
+                    JTable table, Object value, boolean isSelected,
+                    boolean hasFocus, int row, int column) {
 
-    JPanel centerSchedulerPanel = new JPanel(new BorderLayout());
-    centerSchedulerPanel.add(scrollProcesos, BorderLayout.CENTER);
-    centerSchedulerPanel.add(scrollLog, BorderLayout.SOUTH);
+                JLabel label = new JLabel();
+                label.setOpaque(true);
 
-    schedulerPanel.add(topSchedulerPanel, BorderLayout.NORTH);
-    schedulerPanel.add(centerSchedulerPanel, BorderLayout.CENTER);
+                String nombre = (String) tablaModel.getValueAt(row, 0);
+                FileSystemNode nodo = buscarArchivo(root, nombre);
 
-    // Panel sur completo
-    JPanel southPanel = new JPanel(new BorderLayout());
-    southPanel.add(controlPanel, BorderLayout.NORTH);
-    southPanel.add(schedulerPanel, BorderLayout.CENTER);
+                if (nodo != null && nodo.getColor() != null) {
+                    label.setBackground(nodo.getColor());
+                } else {
+                    label.setBackground(Color.WHITE);
+                }
 
-    add(southPanel, BorderLayout.SOUTH);
+                label.setBorder(BorderFactory.createLineBorder(Color.BLACK));
 
-    setSize(900, 850);
-    setLocationRelativeTo(null);
-}
+                return label;
+            }
+        });
+
+        JScrollPane scrollTabla = new JScrollPane(tablaAsignacion);
+        scrollTabla.setBorder(BorderFactory.createTitledBorder("Tabla de Asignación"));
+        scrollTabla.setPreferredSize(new Dimension(400, 150));
+
+        // --- Panel del disco (matriz) ---
+        diskPanel = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                drawDisk(g);
+            }
+        };
+        diskPanel.setPreferredSize(new Dimension(600, 600));
+        diskPanel.setBackground(Color.WHITE);
+        JScrollPane scrollDisco = new JScrollPane(diskPanel);
+        scrollDisco.setBorder(BorderFactory.createTitledBorder("Disco (bloques)"));
+
+        // --- Tabla de journaling (nuevo panel a la derecha del disco) ---
+        journalModel = new DefaultTableModel(new String[]{"Operación", "Archivo", "Bloque", "Estado"}, 0);
+        journalTable = new JTable(journalModel);
+        journalTable.setRowHeight(22);
+        journalTable.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
+        journalTable.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        JScrollPane scrollJournal = new JScrollPane(journalTable);
+        scrollJournal.setBorder(BorderFactory.createTitledBorder("Journaling"));
+
+        // Dividir el espacio del disco y el journal horizontalmente
+        JSplitPane diskSplit = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                scrollDisco,
+                scrollJournal
+        );
+        diskSplit.setResizeWeight(0.65); // 65% para el disco, 35% para journal
+
+        // Panel que contiene todo lo del disco (matriz + journal)
+        JPanel diskViewPanel = new JPanel(new BorderLayout());
+        diskViewPanel.setBorder(BorderFactory.createTitledBorder("Disco y Journal"));
+        diskViewPanel.add(diskSplit, BorderLayout.CENTER);
+
+        // ===== PANEL DERECHO COMPLETO =====
+        // Organizamos verticalmente: tabla de asignación, información, disco+journal
+        JSplitPane topRightSplit = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                scrollTabla,
+                infoPanel
+        );
+        topRightSplit.setResizeWeight(0.3);
+
+        JSplitPane rightPanel = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                topRightSplit,
+                diskViewPanel
+        );
+        rightPanel.setResizeWeight(0.35);
+
+        // Split horizontal principal
+        JSplitPane splitPane = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                treePanel,
+                rightPanel
+        );
+        splitPane.setDividerLocation(300);
+        add(splitPane, BorderLayout.CENTER);
+
+        // Panel de control (acciones)
+        JPanel controlPanel = new JPanel(new FlowLayout());
+        controlPanel.setBorder(BorderFactory.createTitledBorder("Acciones"));
+
+        JButton btnCreateDir = new JButton("Crear Directorio");
+        JButton btnCreateFile = new JButton("Crear Archivo");
+        JButton btnUpdate = new JButton("Modificar Nombre");
+        JButton btnDelete = new JButton("Eliminar");
+        JButton btnRefresh = new JButton("Refrescar");
+        JButton btnSave = new JButton("💾 Guardar");      
+        JButton btnLoad = new JButton("📂 Cargar"); 
+        JButton btnLoadTestCase = new JButton("📋 Cargar Caso Prueba");
+
+        btnCreateDir.addActionListener(e -> solicitarCrearDirectorio());
+        btnCreateFile.addActionListener(e -> solicitarCrearArchivo());
+        btnUpdate.addActionListener(e -> solicitarModificarNombre());
+        btnDelete.addActionListener(e -> solicitarEliminar());
+        btnRefresh.addActionListener(e -> refreshTree());
+        btnSave.addActionListener(e -> guardarEstado());   
+        btnLoad.addActionListener(e -> cargarEstado());
+        btnLoadTestCase.addActionListener(e -> cargarCasoPrueba());
+
+        controlPanel.add(btnCreateDir);
+        controlPanel.add(btnCreateFile);
+        controlPanel.add(btnUpdate);
+        controlPanel.add(btnDelete);
+        controlPanel.add(btnRefresh);
+        controlPanel.add(btnSave);   
+        controlPanel.add(btnLoad);
+        controlPanel.add(btnLoadTestCase);
+
+        // ===== PANEL DE PLANIFICACIÓN Y COLAS =====
+        JPanel schedulerPanel = new JPanel(new BorderLayout());
+        schedulerPanel.setBorder(BorderFactory.createTitledBorder("Planificación de Disco"));
+
+        // Panel superior del scheduler
+        JPanel topSchedulerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        topSchedulerPanel.add(new JLabel("Política:"));
+        politicaCombo = new JComboBox<>(new String[]{"FIFO", "SSTF", "SCAN", "C-SCAN"});
+        politicaCombo.addActionListener(e -> {
+            int politica = politicaCombo.getSelectedIndex();
+            scheduler.setPolitica(politica);
+            actualizarVistaProcesos();
+            System.out.println("Política cambiada manualmente a: " + politica);
+        });
+        topSchedulerPanel.add(politicaCombo);
+
+        cabezaLabel = new JLabel("Cabezal: " + (scheduler != null ? scheduler.getCabezaActual() : 0));
+        topSchedulerPanel.add(cabezaLabel);
+
+        topSchedulerPanel.add(new JLabel("  Pos. inicial:"));
+        SpinnerNumberModel spinnerModel = new SpinnerNumberModel(0, 0, Disk.SIZE - 1, 1);
+        cabezaSpinner = new JSpinner(spinnerModel);
+        cabezaSpinner.setPreferredSize(new Dimension(60, 25));
+        topSchedulerPanel.add(cabezaSpinner);
+
+        btnSetCabeza = new JButton("Establecer");
+        btnSetCabeza.addActionListener(e -> {
+            int nuevaPos = (int) cabezaSpinner.getValue();
+            if (scheduler != null) {
+                scheduler.setCabezaActual(nuevaPos);
+                cabezaLabel.setText("Cabezal: " + scheduler.getCabezaActual());
+                desplazamientoTotal = 0;
+                actualizarDesplazamiento();
+                actualizarVistaProcesos();
+            }
+        });
+        topSchedulerPanel.add(btnSetCabeza);
+
+        desplazamientoLabel = new JLabel("  Desplazamiento total: 0");
+        topSchedulerPanel.add(desplazamientoLabel);
+
+        // Controles de modo manual
+        chkModoManual = new JCheckBox("Modo manual (paso a paso)");
+        chkModoManual.addActionListener(e -> {
+            if (scheduler != null) {
+                scheduler.setModoManual(chkModoManual.isSelected());
+                btnPaso.setEnabled(chkModoManual.isSelected());
+            }
+        });
+        topSchedulerPanel.add(chkModoManual);
+
+        btnPaso = new JButton("Ejecutar siguiente");
+        btnPaso.setEnabled(false);
+        btnPaso.addActionListener(e -> {
+            if (scheduler != null) {
+                scheduler.permitirSiguiente();
+            }
+        });
+        topSchedulerPanel.add(btnPaso);
+
+        // Panel de solicitudes pendientes (cola de disco)
+        solicitudesModel = new DefaultListModel<>();
+        solicitudesList = new JList<>(solicitudesModel);
+        JScrollPane scrollSolicitudes = new JScrollPane(solicitudesList);
+        scrollSolicitudes.setBorder(BorderFactory.createTitledBorder("Solicitudes pendientes (cola de disco)"));
+        scrollSolicitudes.setPreferredSize(new Dimension(400, 80));
+
+        // --- Colas de procesos por estado ---
+        listosModel = new DefaultListModel<>();
+        listosList = new JList<>(listosModel);
+        listosList.setCellRenderer(crearProcesoCellRenderer());
+        JScrollPane scrollListos = new JScrollPane(listosList);
+        scrollListos.setBorder(BorderFactory.createTitledBorder("LISTOS"));
+
+        cpuModel = new DefaultListModel<>();
+        cpuList = new JList<>(cpuModel);
+        cpuList.setCellRenderer(crearProcesoCellRenderer());
+        JScrollPane scrollCPU = new JScrollPane(cpuList);
+        scrollCPU.setBorder(BorderFactory.createTitledBorder("EN CPU"));
+
+        bloqueadosModel = new DefaultListModel<>();
+        bloqueadosList = new JList<>(bloqueadosModel);
+        bloqueadosList.setCellRenderer(crearProcesoCellRenderer());
+        JScrollPane scrollBloqueados = new JScrollPane(bloqueadosList);
+        scrollBloqueados.setBorder(BorderFactory.createTitledBorder("BLOQUEADOS"));
+
+        // Panel que agrupa las tres colas
+        JPanel colasPanel = new JPanel(new GridLayout(1, 3, 5, 0));
+        colasPanel.add(scrollListos);
+        colasPanel.add(scrollCPU);
+        colasPanel.add(scrollBloqueados);
+        colasPanel.setPreferredSize(new Dimension(400, 120));
+
+        // Área de log
+        logArea = new JTextArea(8, 50);
+        logArea.setEditable(false);
+        logArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        JScrollPane scrollLog = new JScrollPane(logArea);
+        scrollLog.setBorder(BorderFactory.createTitledBorder("Log de movimientos"));
+
+        // Panel de locks (opcional)
+        locksModel = new DefaultListModel<>();
+        locksList = new JList<>(locksModel);
+        JScrollPane scrollLocks = new JScrollPane(locksList);
+        scrollLocks.setBorder(BorderFactory.createTitledBorder("Locks activos"));
+        scrollLocks.setPreferredSize(new Dimension(400, 80));
+
+        // Panel central con BoxLayout vertical
+        JPanel centerSchedulerPanel = new JPanel();
+        centerSchedulerPanel.setLayout(new BoxLayout(centerSchedulerPanel, BoxLayout.Y_AXIS));
+        centerSchedulerPanel.add(scrollSolicitudes);
+        centerSchedulerPanel.add(colasPanel);
+        centerSchedulerPanel.add(scrollLog);
+        centerSchedulerPanel.add(scrollLocks);
+
+        schedulerPanel.add(topSchedulerPanel, BorderLayout.NORTH);
+        schedulerPanel.add(centerSchedulerPanel, BorderLayout.CENTER);
+
+        // Panel sur completo
+        JPanel southPanel = new JPanel(new BorderLayout());
+        southPanel.add(controlPanel, BorderLayout.NORTH);
+        southPanel.add(schedulerPanel, BorderLayout.CENTER);
+
+        add(southPanel, BorderLayout.SOUTH);
+
+        setSize(1400, 950); // Un poco más ancho para el journal
+        setLocationRelativeTo(null);
+    }
+
+    // Renderizador común para listas de procesos
+    private DefaultListCellRenderer crearProcesoCellRenderer() {
+        return new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
+                JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+                panel.setOpaque(true);
+                if (value instanceof Process) {
+                    Process p = (Process) value;
+                    FileSystemNode archivo = p.getArchivo();
+
+                    // Círculo de color
+                    JLabel colorLabel = new JLabel();
+                    colorLabel.setOpaque(true);
+                    colorLabel.setPreferredSize(new Dimension(12, 12));
+                    if (archivo != null && !archivo.isDirectory() && archivo.getColor() != null) {
+                        colorLabel.setBackground(archivo.getColor());
+                    } else {
+                        colorLabel.setBackground(Color.GRAY);
+                    }
+                    colorLabel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+                    panel.add(colorLabel);
+
+                    // Texto sin el estado
+                    String tipo = (archivo != null && archivo.isDirectory()) ? "DIR" : "FILE";
+                    String nombre = (archivo != null) ? archivo.getName() : p.getNombreArchivo();
+                    String texto = "P" + p.getId() + " [" + p.getOperacion() + " " + tipo + "] " + nombre;
+                    if (p.getOperacion().equals("UPDATE") && p.getNuevoNombre() != null) {
+                        texto += " → " + p.getNuevoNombre();
+                    }
+                    JLabel textLabel = new JLabel(texto);
+                    panel.add(textLabel);
+
+                    if (isSelected) {
+                        panel.setBackground(list.getSelectionBackground());
+                        textLabel.setForeground(list.getSelectionForeground());
+                    } else {
+                        panel.setBackground(list.getBackground());
+                        textLabel.setForeground(list.getForeground());
+                    }
+                    return panel;
+                }
+                return super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            }
+        };
+    }
+
     // ===== MÉTODOS PARA CAMBIO DE MODO =====
-    
     private void cambiarModo() {
         boolean isAdmin = userModeCombo.getSelectedIndex() == 0;
         userSelectorCombo.setEnabled(!isAdmin);
@@ -313,12 +505,11 @@ public class FileSystemGUI extends JFrame {
         actualizarPermisosInterfaz();
         refreshTree();
         
-        // Mostrar mensaje de cambio
         System.out.println("Modo cambiado a: " + userSession.getModeDisplay());
     }
     
     private void cambiarUsuario() {
-        if (userModeCombo.getSelectedIndex() == 1) { // Solo en modo usuario
+        if (userModeCombo.getSelectedIndex() == 1) {
             String selectedUser = (String) userSelectorCombo.getSelectedItem();
             userSession.setUser(selectedUser, false);
             currentModeLabel.setText("  " + userSession.getModeDisplay());
@@ -332,7 +523,6 @@ public class FileSystemGUI extends JFrame {
     private void actualizarPermisosInterfaz() {
         boolean isAdmin = userSession.isAdmin();
 
-        // Buscar el panel de acciones
         if (getContentPane().getComponentCount() > 2) {
             Component south = getContentPane().getComponent(2);
             if (south instanceof JPanel) {
@@ -348,14 +538,12 @@ public class FileSystemGUI extends JFrame {
                                     JButton button = (JButton) btn;
                                     String text = button.getText();
 
-                                    // Botones de escritura solo para admin
                                     if (text.equals("Crear Directorio") || 
                                         text.equals("Crear Archivo") || 
-                                        text.equals("Modificar Nombre") || // <-- NUEVO
+                                        text.equals("Modificar Nombre") ||
                                         text.equals("Eliminar")) {
                                         button.setEnabled(isAdmin);
                                     }
-                                    // Botón Refrescar siempre habilitado
                                     if (text.equals("Refrescar")) {
                                         button.setEnabled(true);
                                     }
@@ -367,12 +555,11 @@ public class FileSystemGUI extends JFrame {
             }
         }
 
-        // Botones de planificación siempre habilitados
-        if (btnEjecutar != null) btnEjecutar.setEnabled(true);
         if (btnSetCabeza != null) btnSetCabeza.setEnabled(true);
         if (politicaCombo != null) politicaCombo.setEnabled(true);
         if (cabezaSpinner != null) cabezaSpinner.setEnabled(true);
     }
+
     private void guardarEstado() {
         int confirm = JOptionPane.showConfirmDialog(this,
             "¿Guardar el estado actual del sistema?\n" +
@@ -380,7 +567,15 @@ public class FileSystemGUI extends JFrame {
             "Guardar estado", JOptionPane.YES_NO_OPTION);
         
         if (confirm == JOptionPane.YES_OPTION) {
-            FileSystemPersistence.guardarTodo(root, disk, scheduler.getProcesosTodos());
+            LinkedList<Process> procesosParaGuardar = new LinkedList<>();
+            synchronized (procesosActivos) {
+                Node<ProcesoHilo> current = procesosActivos.getHead();
+                while (current != null) {
+                    procesosParaGuardar.add(current.data.getDatosProceso());
+                    current = current.next;
+                }
+            }
+            FileSystemPersistence.guardarTodo(root, disk, procesosParaGuardar);
             JOptionPane.showMessageDialog(this, 
                 "Estado guardado exitosamente en /data", 
                 "Éxito", JOptionPane.INFORMATION_MESSAGE);
@@ -394,21 +589,15 @@ public class FileSystemGUI extends JFrame {
             "Cargar estado", JOptionPane.YES_NO_OPTION);
         
         if (confirm == JOptionPane.YES_OPTION) {
-            // Limpiar estructura actual
-            root = new FileSystemNode();
-            root.setName("/");
-            root.setOwner("admin");
-            root.setDirectory(true);
-            root.setParent(null);
-            root.setChildren(new LinkedList<>());
+            reiniciarSistema();
             
-            // Cargar desde JSON
-            FileSystemPersistence.cargarTodo(root, disk, scheduler.getProcesosTodos());
+            LinkedList<Process> procesosCargados = new LinkedList<>();
+            FileSystemPersistence.cargarTodo(root, disk, procesosCargados);
             
-            // Actualizar vistas
             refreshTree();
             updateDiskView();
             actualizarVistaProcesos();
+            actualizarTablaAsignacion();
             
             JOptionPane.showMessageDialog(this, 
                 "Estado cargado exitosamente", 
@@ -418,20 +607,43 @@ public class FileSystemGUI extends JFrame {
     
     private void drawDisk(Graphics g) {
         int cols = 16;
-        int blockSize = 18;
+        int blockSize = 35;
+        Font font = new Font("Monospaced", Font.BOLD, 12);
+        g.setFont(font);
         Disk.Block[] blocks = disk.getBlocks();
+        
         for (int i = 0; i < Disk.SIZE; i++) {
             int x = (i % cols) * blockSize;
             int y = (i / cols) * blockSize;
+            
             if (blocks[i].isLibre()) {
-                g.setColor(Color.LIGHT_GRAY);
+                g.setColor(new Color(245, 245, 245));
             } else {
                 Color c = blocks[i].getColor();
-                g.setColor(c != null ? c : Color.GREEN);
+                g.setColor(c != null ? c : new Color(100, 200, 100));
             }
             g.fillRect(x, y, blockSize - 1, blockSize - 1);
-            g.setColor(Color.BLACK);
+            
+            g.setColor(new Color(200, 200, 200));
             g.drawRect(x, y, blockSize - 1, blockSize - 1);
+            
+            String num = String.valueOf(i);
+            int textWidth = g.getFontMetrics().stringWidth(num);
+            int textX = x + (blockSize - textWidth) / 2;
+            int textY = y + (blockSize + g.getFontMetrics().getAscent()) / 2 - 3;
+            
+            if (blocks[i].isLibre()) {
+                g.setColor(Color.DARK_GRAY);
+            } else {
+                Color bg = blocks[i].getColor();
+                if (bg != null) {
+                    int luminancia = (int)(0.299 * bg.getRed() + 0.587 * bg.getGreen() + 0.114 * bg.getBlue());
+                    g.setColor(luminancia < 128 ? Color.WHITE : Color.BLACK);
+                } else {
+                    g.setColor(Color.BLACK);
+                }
+            }
+            g.drawString(num, textX, textY);
         }
     }
 
@@ -542,7 +754,7 @@ public class FileSystemGUI extends JFrame {
     private void cargarCasoPrueba() {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setDialogTitle("Seleccionar archivo JSON de caso de prueba");
-        fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Archivos JSON", "json"));
+        fileChooser.setFileFilter(new FileNameExtensionFilter("Archivos JSON", "json"));
 
         int result = fileChooser.showOpenDialog(this);
 
@@ -550,22 +762,40 @@ public class FileSystemGUI extends JFrame {
             File archivo = fileChooser.getSelectedFile();
 
             try {
-                // Cargar el caso de prueba
-                TestCase testCase = test.TestCaseLoader.cargarTestCase(archivo.getAbsolutePath());
+                TestCase testCase = TestCaseLoader.cargarTestCase(archivo.getAbsolutePath());
 
                 if (testCase != null) {
-                    // Limpiar sistema actual
                     reiniciarSistema();
 
-                    // Aplicar el caso de prueba
-                    test.TestCaseLoader.aplicarTestCase(testCase, root, disk, scheduler);
+                    LinkedList<Process> procesosCreados = new LinkedList<>();
+                    TestCaseLoader.aplicarTestCase(testCase, root, disk, scheduler, procesosCreados);
 
-                    // Actualizar vistas
+                    // Establecer el número de solicitudes esperadas en el scheduler
+                    scheduler.setSolicitudesEsperadas(procesosCreados.size());
+
+                    Node<Process> currentProc = procesosCreados.getHead();
+                    while (currentProc != null) {
+                        Process p = currentProc.data;
+                        FileSystemNode archivoProc = p.getArchivo();
+                        RWLock lock;
+                        if (p.getOperacion().equals("CREATE")) {
+                            lock = lockManager.getLock(p.getPadre());
+                        } else {
+                            lock = lockManager.getLock(archivoProc);
+                        }
+                        ProcesoHilo hilo = new ProcesoHilo(p, archivoProc, lock, scheduler, disk, lockManager, this);
+                        synchronized (procesosActivos) {
+                            procesosActivos.add(hilo);
+                        }
+                        hilo.start();
+                        currentProc = currentProc.next;
+                    }
+
                     refreshTree();
                     updateDiskView();
                     actualizarVistaProcesos();
+                    actualizarTablaAsignacion();
 
-                    // Registrar en log
                     logArea.append("📋 Caso de prueba cargado: " + testCase.getTestId() + "\n");
                     logArea.append("   Cabezal inicial: " + testCase.getInitialHead() + "\n");
                     logArea.append("   Solicitudes: " + testCase.getRequests().size() + "\n");
@@ -587,10 +817,15 @@ public class FileSystemGUI extends JFrame {
     }
 
     private void reiniciarSistema() {
-        // Limpiar disco
+        if (scheduler != null) {
+            scheduler.detener();
+            try {
+                scheduler.join(500);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
         disk = new Disk();
-
-        // Limpiar estructura de archivos
         root = new FileSystemNode();
         root.setName("/");
         root.setOwner("admin");
@@ -598,14 +833,28 @@ public class FileSystemGUI extends JFrame {
         root.setParent(null);
         root.setChildren(new LinkedList<>());
 
-        // Limpiar scheduler
-        scheduler = new Scheduler(disk);
+        operaciones = new OperacionesArchivo(disk, root);
+        scheduler = new Scheduler(disk, operaciones, this);
+        
+        int politicaSeleccionada = politicaCombo.getSelectedIndex();
+        scheduler.setPolitica(politicaSeleccionada);
+        System.out.println("Reiniciando sistema con política: " + politicaSeleccionada);
+        
+        scheduler.setModoManual(chkModoManual.isSelected());
+        scheduler.start();
 
-        // Limpiar log
+        procesosActivos = new LinkedList<>();
+        lockManager = new LockManager();
+
         logArea.setText("");
+        btnPaso.setEnabled(chkModoManual.isSelected());
+        
+        // Actualizar tabla (vacía al reiniciar)
+        actualizarTablaAsignacion();
+        // Limpiar journal
+        journalModel.setRowCount(0);
     }
 
-    // Método para crear directorio (ejecución directa)
     private void createDirectory(FileSystemNode parent, String name, String owner) {
         if (parent == null || !parent.isDirectory()) return;
         FileSystemNode newDir = new FileSystemNode();
@@ -616,31 +865,6 @@ public class FileSystemGUI extends JFrame {
         newDir.setChildren(new LinkedList<>());
         if (parent.getChildren() == null) parent.setChildren(new LinkedList<>());
         parent.getChildren().add(newDir);
-    }
-
-    // Método original createFile (se usa desde ejecutarCrear)
-    private void createFile(FileSystemNode parent, String name, String owner, int size) {
-        if (parent == null || !parent.isDirectory()) return;
-        if (!disk.hayEspacio(size)) {
-            JOptionPane.showMessageDialog(this, "No hay suficiente espacio en disco.", "Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        Color color = disk.generateUniqueColor();
-        int firstBlock = disk.asignarBloques(size, color);
-        if (firstBlock == -1) {
-            JOptionPane.showMessageDialog(this, "Error al asignar bloques.", "Error", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        FileSystemNode newFile = new FileSystemNode();
-        newFile.setName(name);
-        newFile.setOwner(owner);
-        newFile.setDirectory(false);
-        newFile.setSizeInBlocks(size);
-        newFile.setFirstBlock(firstBlock);
-        newFile.setColor(color);
-        newFile.setParent(parent);
-        if (parent.getChildren() == null) parent.setChildren(new LinkedList<>());
-        parent.getChildren().add(newFile);
     }
 
     private FileSystemNode findNodeByPath(String path) {
@@ -667,9 +891,6 @@ public class FileSystemGUI extends JFrame {
     }
 
     private void buildTreeNodes(DefaultMutableTreeNode treeNode, FileSystemNode fsNode) {
-        // En modo usuario: puede ver todo (solo lectura)
-        // En modo admin: también ve todo
-        
         DefaultMutableTreeNode childNode = new DefaultMutableTreeNode(fsNode.getName());
         childNode.setUserObject(fsNode);
         treeNode.add(childNode);
@@ -726,7 +947,6 @@ public class FileSystemGUI extends JFrame {
         info.append("📍 Ruta: ").append(getFullPath(fsNode)).append("\n");
         info.append("📋 Tipo: ").append(fsNode.isDirectory() ? "Directorio" : "Archivo").append("\n");
 
-        // Mostrar permisos claramente
         if (userSession.isAdmin()) {
             info.append("🔓 Modo Administrador: Acceso total\n");
         } else {
@@ -765,173 +985,158 @@ public class FileSystemGUI extends JFrame {
         return root;
     }
 
-    // ----- Métodos para planificación -----
-
+    // ----- Métodos para actualizar vistas -----
     private void actualizarVistaProcesos() {
-        procesosModel.clear();
-        LinkedList<Process> cola = scheduler.getColaProcesos();
-        if (cola != null && cola.getHead() != null) {
-            Node<Process> current = cola.getHead();
+    SwingUtilities.invokeLater(() -> {
+        // Limpiar todas las listas
+        listosModel.clear();
+        cpuModel.clear();
+        bloqueadosModel.clear();
+
+        synchronized (procesosActivos) {
+            Node<ProcesoHilo> current = procesosActivos.getHead();
             while (current != null) {
-                procesosModel.addElement(current.data);
+                Process p = current.data.getDatosProceso();
+                String estado = p.getEstado();
+                if ("LISTO".equals(estado) || "NUEVO".equals(estado)) {
+                    listosModel.addElement(p);
+                } else if ("EJECUTANDO".equals(estado)) {
+                    cpuModel.addElement(p);
+                } else if ("BLOQUEADO".equals(estado)) {
+                    bloqueadosModel.addElement(p);
+                }
+                // Los terminados no se muestran
                 current = current.next;
             }
         }
-        cabezaLabel.setText("Cabezal: " + scheduler.getCabezaActual());
-    }
-
-    private void ejecutarSiguienteProceso() {
-        int cabezaAntes = scheduler.getCabezaActual();
-        Process p = scheduler.ejecutarSiguiente();
-        if (p == null) {
-            JOptionPane.showMessageDialog(this, "No hay procesos en la cola.");
-            return;
+        
+        // Actualizar cabezal y desplazamiento total
+        cabezaLabel.setText("Cabezal: " + (scheduler != null ? scheduler.getCabezaActual() : 0));
+        if (scheduler != null) {
+            desplazamientoTotal = scheduler.getDesplazamientoTotal(); // Tomamos el valor del scheduler
+        }
+        desplazamientoLabel.setText("  Desplazamiento total: " + desplazamientoTotal);
+        
+        // Actualizar solicitudes pendientes
+        if (scheduler != null) {
+            LinkedList<String> pendientes = scheduler.getSolicitudesPendientes();
+            solicitudesModel.clear();
+            Node<String> currentPend = pendientes.getHead();
+            while (currentPend != null) {
+                solicitudesModel.addElement(currentPend.data);
+                currentPend = currentPend.next;
+            }
         }
         
-        // Registrar movimiento antes de ejecutar
-        int bloque = scheduler.getBloqueSolicitado(p);
-        if (bloque != -1) {
-            int distancia = Math.abs(bloque - cabezaAntes);
-            logArea.append("Cabezal: " + cabezaAntes + " → " + bloque + " (distancia " + distancia + ") para " + p + "\n");
+        // Actualizar locks
+        actualizarLocksView();
+    });
+}
+
+    private void actualizarLocksView() {
+        if (locksModel != null && lockManager != null) {
+            LinkedList<String> info = lockManager.getLocksInfo();
+            locksModel.clear();
+            Node<String> current = info.getHead();
+            while (current != null) {
+                locksModel.addElement(current.data);
+                current = current.next;
+            }
+        }
+    }
+
+    private void actualizarDesplazamiento() {
+        desplazamientoLabel.setText("  Desplazamiento total: " + desplazamientoTotal);
+    }
+
+    // ----- Métodos para la tabla de asignación -----
+    private void actualizarTablaAsignacion() {
+        SwingUtilities.invokeLater(() -> {
+            tablaModel.setRowCount(0);
+            recorrerYAgregarArchivos(root);
+        });
+    }
+
+    private void recorrerYAgregarArchivos(FileSystemNode nodo) {
+        if (!nodo.isDirectory()) {
+            tablaModel.addRow(new Object[]{
+                nodo.getName(),
+                nodo.getSizeInBlocks(),
+                nodo.getFirstBlock(),
+                "" // El color se muestra mediante renderer, no necesitamos texto
+            });
         } else {
-            logArea.append("Ejecutando " + p + " (sin bloque específico)\n");
+            if (nodo.getChildren() != null) {
+                Node<FileSystemNode> current = nodo.getChildren().getHead();
+                while (current != null) {
+                    recorrerYAgregarArchivos(current.data);
+                    current = current.next;
+                }
+            }
         }
-        
-        boolean exito = false;
-        try {
-           switch (p.getOperacion()) {
-              case "READ":    exito = ejecutarLeer(p); break;
-              case "UPDATE":  exito = ejecutarActualizar(p); break;
-              case "DELETE":  exito = ejecutarEliminar(p); break;
-              case "CREATE":  exito = ejecutarCrear(p); break;
-            default:
-                JOptionPane.showMessageDialog(this, "Operación desconocida: " + p.getOperacion());
-}
-            p.setEstado(exito ? "TERMINADO" : "ERROR");
-        } catch (Exception e) {
-            p.setEstado("ERROR");
-            e.printStackTrace();
+    }
+
+    // ----- Método auxiliar para buscar un archivo por nombre -----
+    private FileSystemNode buscarArchivo(FileSystemNode nodo, String nombre) {
+        if (!nodo.isDirectory()) {
+            if (nodo.getName().equals(nombre)) {
+                return nodo;
+            }
         }
-        
-        refreshTree();
-        updateDiskView();
-        actualizarVistaProcesos();
-        
-        // Hacer scroll al final del log
-        logArea.setCaretPosition(logArea.getDocument().getLength());
-    }
 
-    private boolean ejecutarCrear(Process p) {
-    // Para CREATE, los datos están en getNombreArchivo() y getPadre()
-    String nombre = p.getNombreArchivo();
-    String owner = p.getOwner();
-    int tamanio = p.getTamanio();
-    FileSystemNode padre = p.getPadre();
+        if (nodo.getChildren() != null) {
+            Node<FileSystemNode> current = nodo.getChildren().getHead();
 
-    if (padre == null) {
-        System.err.println("Error: padre nulo en ejecutarCrear");
-        return false;
-    }
-    if (!disk.hayEspacio(tamanio)) {
-        JOptionPane.showMessageDialog(this, "No hay suficiente espacio en disco.", "Error", JOptionPane.ERROR_MESSAGE);
-        return false;
-    }
+            while (current != null) {
+                FileSystemNode encontrado = buscarArchivo(current.data, nombre);
 
-    Color color = disk.generateUniqueColor();
-    int firstBlock = disk.asignarBloques(tamanio, color);
-    if (firstBlock == -1) {
-        JOptionPane.showMessageDialog(this, "Error al asignar bloques.", "Error", JOptionPane.ERROR_MESSAGE);
-        return false;
-    }
+                if (encontrado != null) {
+                    return encontrado;
+                }
 
-    FileSystemNode newFile = new FileSystemNode();
-    newFile.setName(nombre);
-    newFile.setOwner(owner);
-    newFile.setDirectory(false);
-    newFile.setSizeInBlocks(tamanio);
-    newFile.setFirstBlock(firstBlock);
-    newFile.setColor(color);
-    newFile.setParent(padre);
-
-    if (padre.getChildren() == null) padre.setChildren(new LinkedList<>());
-    padre.getChildren().add(newFile);
-
-    scheduler.setCabezaActual(firstBlock);
-    return true;
-}
-
-    private boolean ejecutarEliminar(Process p) {
-    FileSystemNode nodo = p.getArchivo();
-    if (nodo == null || nodo == root) {
-        System.err.println("Error: nodo nulo o es la raíz");
-        return false;
-    }
-
-    // Liberar bloques en disco
-    if (!nodo.isDirectory()) {
-        disk.liberarBloques(nodo.getFirstBlock(), nodo.getColor());
-    } else {
-        liberarBloquesRecursivo(nodo);
-    }
-
-    FileSystemNode parent = nodo.getParent();
-    if (parent == null) {
-        System.err.println("Error: el nodo no tiene padre");
-        return false;
-    }
-    if (parent.getChildren() == null) {
-        System.err.println("Error: el padre no tiene lista de hijos");
-        return false;
-    }
-
-    // Eliminar de la lista de hijos usando comparación por referencia (no confiar en equals)
-    LinkedList<FileSystemNode> hijos = parent.getChildren();
-    LinkedList<FileSystemNode> nuevosHijos = new LinkedList<>();
-    Node<FileSystemNode> current = hijos.getHead();
-    while (current != null) {
-        if (current.data != nodo) {  // Comparación por referencia
-            nuevosHijos.add(current.data);
+                current = current.next;
+            }
         }
-        current = current.next;
-    }
-    parent.setChildren(nuevosHijos);  // Reemplazar la lista
 
-    // Actualizar cabezal (opcional, para mantener coherencia)
-    if (!nodo.isDirectory() && nodo.getFirstBlock() != -1) {
-        scheduler.setCabezaActual(nodo.getFirstBlock());
+        return null;
     }
 
-    return true;
-}
-
-    private boolean ejecutarLeer(Process p) {
-        FileSystemNode archivo = p.getArchivo();
-        if (archivo == null || archivo.isDirectory()) return false;
-        System.out.println("Leyendo archivo: " + archivo.getFullPath());
-        int bloque = p.getBloqueSolicitado() != -1 ? p.getBloqueSolicitado() : archivo.getFirstBlock();
-        scheduler.setCabezaActual(bloque);
-        return true;
+    // ----- Método para añadir entradas al journal -----
+    public void agregarEntradaJournal(String operacion, String archivo, int bloque, String estado) {
+        SwingUtilities.invokeLater(() -> {
+            journalModel.addRow(new Object[]{operacion, archivo, bloque, estado});
+            // Mantener solo las últimas 20 entradas para no saturar
+            if (journalModel.getRowCount() > 20) {
+                journalModel.removeRow(0);
+            }
+        });
     }
 
-    private boolean ejecutarActualizar(Process p) {
-    FileSystemNode archivo = p.getArchivo();
-    if (archivo == null || archivo.isDirectory()) return false;
-    
-    String nuevoNombre = p.getNuevoNombre();
-    if (nuevoNombre == null || nuevoNombre.isEmpty()) return false;
-    
-    // Cambiar el nombre
-    archivo.setName(nuevoNombre);
-    
-    // Mover el cabezal al primer bloque del archivo
-    scheduler.setCabezaActual(archivo.getFirstBlock());
-    
-    return true;
-}
+    // ----- Implementación de Terminable -----
+    @Override
+    public void onTerminate(ProcesoHilo hilo) {
+        SwingUtilities.invokeLater(() -> {
+            synchronized (procesosActivos) {
+                procesosActivos.remove(hilo);
+            }
+            refreshTree();
+            updateDiskView();
+            actualizarVistaProcesos();
+            actualizarTablaAsignacion();
+        });
+    }
 
-    // Métodos para solicitar operaciones
+    // ----- Implementación de LogListener -----
+    @Override
+    public void onMovimiento(String mensaje) {
+        SwingUtilities.invokeLater(() -> {
+            logArea.append(mensaje + "\n");
+            logArea.setCaretPosition(logArea.getDocument().getLength());
+        });
+    }
+
+    // ----- Métodos de solicitud de operaciones -----
     private void solicitarCrearDirectorio() {
-        // VERIFICACIÓN DE PERMISOS - MODO USUARIO
         if (!userSession.isAdmin()) {
             JOptionPane.showMessageDialog(this, 
                 "Modo usuario: no tiene permisos para crear directorios", 
@@ -949,7 +1154,6 @@ public class FileSystemGUI extends JFrame {
 
         FileSystemNode parentDir = getSelectedDirectory();
 
-        // VERIFICACIÓN ADICIONAL - Permisos en el directorio padre
         if (!userSession.canCreateIn(parentDir)) {
             JOptionPane.showMessageDialog(this, 
                 "No tiene permisos para crear directorios aquí", 
@@ -977,136 +1181,151 @@ public class FileSystemGUI extends JFrame {
             refreshTree();
         }
     }
+
+    private void solicitarCrearArchivo() {
+        if (!userSession.isAdmin()) {
+            JOptionPane.showMessageDialog(this, 
+                "Modo usuario: no tiene permisos para crear archivos", 
+                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        JTextField nameField = new JTextField(20);
+        JTextField ownerField = new JTextField("usuario1", 20);
+        JTextField sizeField = new JTextField("5", 10);
+        JPanel panel = new JPanel(new GridLayout(0, 2, 5, 5));
+        panel.add(new JLabel("Nombre:"));
+        panel.add(nameField);
+        panel.add(new JLabel("Dueño:"));
+        panel.add(ownerField);
+        panel.add(new JLabel("Tamaño (bloques):"));
+        panel.add(sizeField);
+
+        FileSystemNode parentDir = getSelectedDirectory();
+
+        if (!userSession.canCreateIn(parentDir)) {
+            JOptionPane.showMessageDialog(this, 
+                "No tiene permisos para crear archivos en este directorio", 
+                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        String parentPath = (parentDir != null) ? getFullPath(parentDir) : "/";
+        panel.add(new JLabel(""));
+        panel.add(new JLabel("Directorio actual: " + parentPath));
+
+        int result = JOptionPane.showConfirmDialog(this, panel, "Crear archivo", JOptionPane.OK_CANCEL_OPTION);
+        if (result == JOptionPane.OK_OPTION) {
+            String name = nameField.getText().trim();
+            String owner = ownerField.getText().trim();
+            if (name.isEmpty() || owner.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Nombre y dueño no pueden estar vacíos", "Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            if (parentDir == null) {
+                JOptionPane.showMessageDialog(this, "Debe seleccionar un directorio padre", "Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            try {
+                int size = Integer.parseInt(sizeField.getText().trim());
+                if (size <= 0) throw new NumberFormatException();
+                
+                Process p = new Process("CREATE", name, owner, size, parentDir);
+                RWLock lock = lockManager.getLock(parentDir);
+                ProcesoHilo hilo = new ProcesoHilo(p, parentDir, lock, scheduler, disk, lockManager, this);
+                synchronized (procesosActivos) {
+                    procesosActivos.add(hilo);
+                }
+                hilo.start();
+                actualizarVistaProcesos();
+                
+            } catch (NumberFormatException e) {
+                JOptionPane.showMessageDialog(this, "Tamaño debe ser un número entero positivo", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
     private void solicitarModificarNombre() {
-    if (!userSession.isAdmin()) {
-        JOptionPane.showMessageDialog(this, "Modo usuario: no tiene permisos para modificar nombres", "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-        return;
-    }
-
-    DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
-    if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
-        JOptionPane.showMessageDialog(this, "Seleccione un elemento para modificar", "Error", JOptionPane.ERROR_MESSAGE);
-        return;
-    }
-
-    FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
-
-    if (fsNode == root) {
-        JOptionPane.showMessageDialog(this, "No se puede modificar el nombre de la raíz", "Error", JOptionPane.ERROR_MESSAGE);
-        return;
-    }
-
-    String nuevoNombre = JOptionPane.showInputDialog(this,
-        "Nuevo nombre para '" + fsNode.getName() + "':",
-        "Modificar nombre", JOptionPane.QUESTION_MESSAGE);
-
-    if (nuevoNombre != null && !nuevoNombre.trim().isEmpty()) {
-        // Crear proceso UPDATE
-        Process p = new Process("UPDATE", fsNode, userSession.getCurrentUser());
-        p.setNuevoNombre(nuevoNombre.trim());
-        scheduler.agregarProceso(p);
-        actualizarVistaProcesos();
-    }
-}
-
-   private void solicitarCrearArchivo() {
-    // VERIFICACIÓN DE PERMISOS - MODO USUARIO
-    if (!userSession.isAdmin()) {
-        JOptionPane.showMessageDialog(this, 
-            "Modo usuario: no tiene permisos para crear archivos", 
-            "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-        return;
-    }
-
-    JTextField nameField = new JTextField(20);
-    JTextField ownerField = new JTextField("usuario1", 20);
-    JTextField sizeField = new JTextField("5", 10);
-    JPanel panel = new JPanel(new GridLayout(0, 2, 5, 5));
-    panel.add(new JLabel("Nombre:"));
-    panel.add(nameField);
-    panel.add(new JLabel("Dueño:"));
-    panel.add(ownerField);
-    panel.add(new JLabel("Tamaño (bloques):"));
-    panel.add(sizeField);
-
-    FileSystemNode parentDir = getSelectedDirectory();
-
-    if (!userSession.canCreateIn(parentDir)) {
-        JOptionPane.showMessageDialog(this, 
-            "No tiene permisos para crear archivos en este directorio", 
-            "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-        return;
-    }
-
-    String parentPath = (parentDir != null) ? getFullPath(parentDir) : "/";
-    panel.add(new JLabel(""));
-    panel.add(new JLabel("Directorio actual: " + parentPath));
-
-    int result = JOptionPane.showConfirmDialog(this, panel, "Crear archivo", JOptionPane.OK_CANCEL_OPTION);
-    if (result == JOptionPane.OK_OPTION) {
-        String name = nameField.getText().trim();
-        String owner = ownerField.getText().trim();
-        if (name.isEmpty() || owner.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Nombre y dueño no pueden estar vacíos", "Error", JOptionPane.ERROR_MESSAGE);
+        if (!userSession.isAdmin()) {
+            JOptionPane.showMessageDialog(this, "Modo usuario: no tiene permisos para modificar nombres", "Permiso denegado", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        if (parentDir == null) {
-            JOptionPane.showMessageDialog(this, "Debe seleccionar un directorio padre", "Error", JOptionPane.ERROR_MESSAGE);
+
+        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
+        if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
+            JOptionPane.showMessageDialog(this, "Seleccione un elemento para modificar", "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        try {
-            int size = Integer.parseInt(sizeField.getText().trim());
-            if (size <= 0) throw new NumberFormatException();
-            // CAMBIO: "CREAR" → "CREATE"
-            Process p = new Process("CREATE", name, owner, size, parentDir);
-            scheduler.agregarProceso(p);
+
+        FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
+
+        if (fsNode == root) {
+            JOptionPane.showMessageDialog(this, "No se puede modificar el nombre de la raíz", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        String nuevoNombre = JOptionPane.showInputDialog(this,
+            "Nuevo nombre para '" + fsNode.getName() + "':",
+            "Modificar nombre", JOptionPane.QUESTION_MESSAGE);
+
+        if (nuevoNombre != null && !nuevoNombre.trim().isEmpty()) {
+            Process p = new Process("UPDATE", fsNode, userSession.getCurrentUser());
+            p.setNuevoNombre(nuevoNombre.trim());
+            RWLock lock = lockManager.getLock(fsNode);
+            ProcesoHilo hilo = new ProcesoHilo(p, fsNode, lock, scheduler, disk, lockManager, this);
+            synchronized (procesosActivos) {
+                procesosActivos.add(hilo);
+            }
+            hilo.start();
             actualizarVistaProcesos();
-        } catch (NumberFormatException e) {
-            JOptionPane.showMessageDialog(this, "Tamaño debe ser un número entero positivo", "Error", JOptionPane.ERROR_MESSAGE);
         }
     }
-}
-   private void solicitarEliminar() {
-    if (!userSession.isAdmin()) {
-        JOptionPane.showMessageDialog(this, 
-            "Modo usuario: no tiene permisos para eliminar elementos", 
-            "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-        return;
+
+    private void solicitarEliminar() {
+        if (!userSession.isAdmin()) {
+            JOptionPane.showMessageDialog(this, 
+                "Modo usuario: no tiene permisos para eliminar elementos", 
+                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
+        if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
+            JOptionPane.showMessageDialog(this, "Seleccione un elemento para eliminar", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
+
+        if (!userSession.canDelete(fsNode)) {
+            JOptionPane.showMessageDialog(this, 
+                "No tiene permisos para eliminar este elemento", 
+                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        if (fsNode == root) {
+            JOptionPane.showMessageDialog(this, "No se puede eliminar el directorio raíz", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        int confirm = JOptionPane.showConfirmDialog(this,
+                "¿Está seguro de eliminar " + fsNode.getFullPath() + "?\n" +
+                (fsNode.isDirectory() ? "Se eliminarán todos sus contenidos." : ""),
+                "Confirmar eliminación", JOptionPane.YES_NO_OPTION);
+
+        if (confirm == JOptionPane.YES_OPTION) {
+            Process p = new Process("DELETE", fsNode, userSession.getCurrentUser());
+            RWLock lock = lockManager.getLock(fsNode);
+            ProcesoHilo hilo = new ProcesoHilo(p, fsNode, lock, scheduler, disk, lockManager, this);
+            synchronized (procesosActivos) {
+                procesosActivos.add(hilo);
+            }
+            hilo.start();
+            actualizarVistaProcesos();
+        }
     }
 
-    DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
-    if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
-        JOptionPane.showMessageDialog(this, "Seleccione un elemento para eliminar", "Error", JOptionPane.ERROR_MESSAGE);
-        return;
-    }
-
-    FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
-
-    if (!userSession.canDelete(fsNode)) {
-        JOptionPane.showMessageDialog(this, 
-            "No tiene permisos para eliminar este elemento", 
-            "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-        return;
-    }
-
-    if (fsNode == root) {
-        JOptionPane.showMessageDialog(this, "No se puede eliminar el directorio raíz", "Error", JOptionPane.ERROR_MESSAGE);
-        return;
-    }
-
-    int confirm = JOptionPane.showConfirmDialog(this,
-            "¿Está seguro de eliminar " + fsNode.getFullPath() + "?\n" +
-            (fsNode.isDirectory() ? "Se eliminarán todos sus contenidos." : ""),
-            "Confirmar eliminación", JOptionPane.YES_NO_OPTION);
-
-    if (confirm == JOptionPane.YES_OPTION) {
-        // CAMBIO: "ELIMINAR" → "DELETE"
-        Process p = new Process("DELETE", fsNode, "admin");
-        scheduler.agregarProceso(p);
-        actualizarVistaProcesos();
-    }
-}
-   
     private void liberarBloquesRecursivo(FileSystemNode node) {
         if (node.isDirectory()) {
             if (node.getChildren() != null) {
@@ -1133,7 +1352,4 @@ public class FileSystemGUI extends JFrame {
             System.out.println("✅ Ventana del simulador abierta correctamente");
         });
     }
-    private void actualizarDesplazamiento() {
-    desplazamientoLabel.setText("  Desplazamiento total: " + desplazamientoTotal);
-}
 }
