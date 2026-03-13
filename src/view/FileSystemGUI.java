@@ -987,51 +987,47 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
     // ----- Métodos para actualizar vistas -----
     private void actualizarVistaProcesos() {
-    SwingUtilities.invokeLater(() -> {
-        // Limpiar todas las listas
-        listosModel.clear();
-        cpuModel.clear();
-        bloqueadosModel.clear();
+        SwingUtilities.invokeLater(() -> {
+            // Limpiar todas las listas
+            listosModel.clear();
+            cpuModel.clear();
+            bloqueadosModel.clear();
 
-        synchronized (procesosActivos) {
-            Node<ProcesoHilo> current = procesosActivos.getHead();
-            while (current != null) {
-                Process p = current.data.getDatosProceso();
-                String estado = p.getEstado();
-                if ("LISTO".equals(estado) || "NUEVO".equals(estado)) {
-                    listosModel.addElement(p);
-                } else if ("EJECUTANDO".equals(estado)) {
-                    cpuModel.addElement(p);
-                } else if ("BLOQUEADO".equals(estado)) {
-                    bloqueadosModel.addElement(p);
+            synchronized (procesosActivos) {
+                Node<ProcesoHilo> current = procesosActivos.getHead();
+                while (current != null) {
+                    Process p = current.data.getDatosProceso();
+                    String estado = p.getEstado();
+                    if ("LISTO".equals(estado) || "NUEVO".equals(estado)) {
+                        listosModel.addElement(p);
+                    } else if ("EJECUTANDO".equals(estado)) {
+                        cpuModel.addElement(p);
+                    } else if ("BLOQUEADO".equals(estado)) {
+                        bloqueadosModel.addElement(p);
+                    }
+                    // Los terminados no se muestran
+                    current = current.next;
                 }
-                // Los terminados no se muestran
-                current = current.next;
             }
-        }
-        
-        // Actualizar cabezal y desplazamiento total
-        cabezaLabel.setText("Cabezal: " + (scheduler != null ? scheduler.getCabezaActual() : 0));
-        if (scheduler != null) {
-            desplazamientoTotal = scheduler.getDesplazamientoTotal(); // Tomamos el valor del scheduler
-        }
-        desplazamientoLabel.setText("  Desplazamiento total: " + desplazamientoTotal);
-        
-        // Actualizar solicitudes pendientes
-        if (scheduler != null) {
-            LinkedList<String> pendientes = scheduler.getSolicitudesPendientes();
-            solicitudesModel.clear();
-            Node<String> currentPend = pendientes.getHead();
-            while (currentPend != null) {
-                solicitudesModel.addElement(currentPend.data);
-                currentPend = currentPend.next;
+            
+            // Actualizar cabezal
+            cabezaLabel.setText("Cabezal: " + (scheduler != null ? scheduler.getCabezaActual() : 0));
+            
+            // Actualizar solicitudes pendientes
+            if (scheduler != null) {
+                LinkedList<String> pendientes = scheduler.getSolicitudesPendientes();
+                solicitudesModel.clear();
+                Node<String> currentPend = pendientes.getHead();
+                while (currentPend != null) {
+                    solicitudesModel.addElement(currentPend.data);
+                    currentPend = currentPend.next;
+                }
             }
-        }
-        
-        // Actualizar locks
-        actualizarLocksView();
-    });
-}
+            
+            // Actualizar locks
+            actualizarLocksView();
+        });
+    }
 
     private void actualizarLocksView() {
         if (locksModel != null && lockManager != null) {

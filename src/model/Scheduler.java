@@ -20,7 +20,8 @@ public class Scheduler extends Thread {
     private int solicitudesEsperadas = 0;
     private boolean modoManual = false;
     private boolean siguientePermitido = false;
-    private int desplazamientoTotal = 0; // NUEVO
+    private int desplazamientoTotal = 0;
+    private int retardoMs = 0; // Nuevo: retardo en milisegundos para modo automático
     
     public Scheduler(Disk disk, OperacionesArchivo operaciones, LogListener logListener) {
         this.disk = disk;
@@ -45,8 +46,12 @@ public class Scheduler extends Thread {
         return cabezaActual;
     }
     
-    public int getDesplazamientoTotal() { // NUEVO GETTER
+    public int getDesplazamientoTotal() {
         return desplazamientoTotal;
+    }
+    
+    public void setRetardoMs(int ms) { // Nuevo setter
+        this.retardoMs = ms;
     }
     
     public synchronized void agregarSolicitud(SolicitudES solicitud) {
@@ -271,7 +276,7 @@ public class Scheduler extends Thread {
         int bloque = solicitud.getBloque();
         if (bloque != -1) {
             int distancia = Math.abs(bloque - cabezaAntes);
-            desplazamientoTotal += distancia; // <-- ACUMULAR
+            desplazamientoTotal += distancia;
             cabezaActual = bloque;
             if (logListener != null) {
                 String nombreArchivo = (datos.getArchivo() != null) ? datos.getArchivo().getName() : datos.getNombreArchivo();
@@ -287,6 +292,16 @@ public class Scheduler extends Thread {
         
         synchronized (hilo) {
             hilo.notify();
+        }
+        
+        // Si no estamos en modo manual y hay retardo, pausamos
+        if (!modoManual && retardoMs > 0) {
+            System.out.println("Durmiendo " + retardoMs + " ms después de atender P" + datos.getId());
+            try {
+                Thread.sleep(retardoMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
     
