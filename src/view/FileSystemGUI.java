@@ -27,6 +27,12 @@ import javax.swing.filechooser.FileNameExtensionFilter;
 import persistence.FileSystemPersistence;
 
 public class FileSystemGUI extends JFrame implements Terminable, LogListener {
+    // ===== PALETA DE COLORES =====
+    private final Color COLOR_BACKGROUND = new Color(235,240,250);
+    private final Color COLOR_PANEL = new Color(245,248,255);
+    private final Color COLOR_HEADER = new Color(210,220,240);
+    private final Color COLOR_SELECTION = new Color(180,205,255);
+
     private JTree fileTree;
     private DefaultTreeModel treeModel;
     private JTextArea infoArea;
@@ -172,15 +178,8 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         JScrollPane treeScroll = new JScrollPane(fileTree);
         treePanel.add(treeScroll, BorderLayout.CENTER);
 
-        // Panel derecho con información, tabla y disco
-        JPanel infoPanel = new JPanel(new BorderLayout());
-        infoPanel.setBorder(BorderFactory.createTitledBorder("Información del elemento"));
-        infoArea = new JTextArea(10, 25);
-        infoArea.setEditable(false);
-        infoArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        infoPanel.add(new JScrollPane(infoArea), BorderLayout.CENTER);
-
-        // --- Tabla de asignación ---
+        // ===== PANEL DERECHO MEJORADO =====
+        // --- Tabla de asignación (estilo moderno) ---
         tablaModel = new DefaultTableModel(new String[]{"Nombre", "Bloques", "Primer Bloque", "Color"}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
@@ -188,10 +187,15 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             }
         };
         tablaAsignacion = new JTable(tablaModel);
-        tablaAsignacion.setFillsViewportHeight(true);
         tablaAsignacion.setRowHeight(22);
+        tablaAsignacion.setFillsViewportHeight(true);
+        tablaAsignacion.setShowGrid(false);
+        tablaAsignacion.setIntercellSpacing(new Dimension(0, 0));
+        tablaAsignacion.setSelectionBackground(COLOR_SELECTION);
+        tablaAsignacion.setSelectionForeground(Color.BLACK);
+
         tablaAsignacion.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
-        tablaAsignacion.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        tablaAsignacion.getTableHeader().setBackground(COLOR_HEADER);
 
         // Renderizador para mostrar el color real en la columna "Color"
         tablaAsignacion.getColumnModel().getColumn(3).setCellRenderer(new DefaultTableCellRenderer() {
@@ -219,8 +223,21 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         });
 
         JScrollPane scrollTabla = new JScrollPane(tablaAsignacion);
-        scrollTabla.setBorder(BorderFactory.createTitledBorder("Tabla de Asignación"));
-        scrollTabla.setPreferredSize(new Dimension(400, 150));
+        scrollTabla.setBorder(BorderFactory.createTitledBorder("Tabla de asignación"));
+
+        // --- Panel de información del elemento (con scroll) ---
+        infoArea = new JTextArea();
+        infoArea.setEditable(false);
+        infoArea.setLineWrap(true);
+        infoArea.setWrapStyleWord(true);
+        infoArea.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+
+        JScrollPane scrollInfo = new JScrollPane(infoArea);
+
+        JPanel infoPanel = new JPanel(new BorderLayout());
+        infoPanel.setBackground(COLOR_PANEL);
+        infoPanel.setBorder(BorderFactory.createTitledBorder("Información del elemento"));
+        infoPanel.add(scrollInfo, BorderLayout.CENTER);
 
         // --- Panel del disco (matriz) ---
         diskPanel = new JPanel() {
@@ -230,57 +247,56 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
                 drawDisk(g);
             }
         };
-        diskPanel.setPreferredSize(new Dimension(600, 600));
-        diskPanel.setBackground(Color.WHITE);
+        diskPanel.setBackground(new Color(250, 250, 255));
+        diskPanel.setPreferredSize(new Dimension(560, 560)); // <-- LÍNEA AÑADIDA
         JScrollPane scrollDisco = new JScrollPane(diskPanel);
         scrollDisco.setBorder(BorderFactory.createTitledBorder("Disco (bloques)"));
 
-        // --- Tabla de journaling (nuevo panel a la derecha del disco) ---
+        // --- Tabla de journaling (estilo moderno) ---
         journalModel = new DefaultTableModel(new String[]{"Operación", "Archivo", "Bloque", "Estado"}, 0);
         journalTable = new JTable(journalModel);
         journalTable.setRowHeight(22);
+        journalTable.setShowGrid(false);
+        journalTable.setIntercellSpacing(new Dimension(0, 0));
+        journalTable.setSelectionBackground(COLOR_SELECTION);
         journalTable.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
-        journalTable.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        journalTable.getTableHeader().setBackground(COLOR_HEADER);
         JScrollPane scrollJournal = new JScrollPane(journalTable);
         scrollJournal.setBorder(BorderFactory.createTitledBorder("Journaling"));
 
-        // Dividir el espacio del disco y el journal horizontalmente
-        JSplitPane diskSplit = new JSplitPane(
+        // ===== LAYOUT 2x2 =====
+        // Fila superior: tabla de asignación + info
+        JSplitPane topSplit = new JSplitPane(
+                JSplitPane.HORIZONTAL_SPLIT,
+                scrollTabla,
+                infoPanel
+        );
+        topSplit.setResizeWeight(0.6); // 60% para la tabla
+
+        // Fila inferior: disco + journal
+        JSplitPane bottomSplit = new JSplitPane(
                 JSplitPane.HORIZONTAL_SPLIT,
                 scrollDisco,
                 scrollJournal
         );
-        diskSplit.setResizeWeight(0.65); // 65% para el disco, 35% para journal
+        bottomSplit.setResizeWeight(0.75); // 75% para el disco
 
-        // Panel que contiene todo lo del disco (matriz + journal)
-        JPanel diskViewPanel = new JPanel(new BorderLayout());
-        diskViewPanel.setBorder(BorderFactory.createTitledBorder("Disco y Journal"));
-        diskViewPanel.add(diskSplit, BorderLayout.CENTER);
-
-        // ===== PANEL DERECHO COMPLETO =====
-        // Organizamos verticalmente: tabla de asignación, información, disco+journal
-        JSplitPane topRightSplit = new JSplitPane(
-                JSplitPane.VERTICAL_SPLIT,
-                scrollTabla,
-                infoPanel
-        );
-        topRightSplit.setResizeWeight(0.3);
-
+        // Panel derecho completo
         JSplitPane rightPanel = new JSplitPane(
                 JSplitPane.VERTICAL_SPLIT,
-                topRightSplit,
-                diskViewPanel
+                topSplit,
+                bottomSplit
         );
-        rightPanel.setResizeWeight(0.35);
+        rightPanel.setResizeWeight(0.35); // 35% para la parte superior
 
-        // Split horizontal principal
-        JSplitPane splitPane = new JSplitPane(
+        // Split principal con el árbol
+        JSplitPane mainSplit = new JSplitPane(
                 JSplitPane.HORIZONTAL_SPLIT,
                 treePanel,
                 rightPanel
         );
-        splitPane.setDividerLocation(300);
-        add(splitPane, BorderLayout.CENTER);
+        mainSplit.setDividerLocation(280);
+        add(mainSplit, BorderLayout.CENTER);
 
         // Panel de control (acciones)
         JPanel controlPanel = new JPanel(new FlowLayout());
@@ -438,7 +454,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         add(southPanel, BorderLayout.SOUTH);
 
-        setSize(1400, 950); // Un poco más ancho para el journal
+        setSize(1500, 900);
         setLocationRelativeTo(null);
     }
 
@@ -924,46 +940,69 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         for (int i = 0; i < fileTree.getRowCount(); i++) fileTree.expandRow(i);
     }
 
-    private void showFileInfo() {
-        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
-        if (selectedNode == null) return;
+   private void showFileInfo() {
 
-        Object userObj = selectedNode.getUserObject();
-        if (!(userObj instanceof FileSystemNode)) {
-            infoArea.setText("No hay información disponible para este elemento");
-            return;
-        }
+    DefaultMutableTreeNode selectedNode =
+            (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
 
-        FileSystemNode fsNode = (FileSystemNode) userObj;
-
-        StringBuilder info = new StringBuilder();
-        info.append("══════════════════════════════\n");
-        info.append("  INFORMACIÓN DEL ELEMENTO\n");
-        info.append("══════════════════════════════\n\n");
-
-        info.append(fsNode.isDirectory() ? "📁 " : "📄 ");
-        info.append("Nombre: ").append(fsNode.getName()).append("\n");
-        info.append("👤 Dueño: ").append(fsNode.getOwner()).append("\n");
-        info.append("📍 Ruta: ").append(getFullPath(fsNode)).append("\n");
-        info.append("📋 Tipo: ").append(fsNode.isDirectory() ? "Directorio" : "Archivo").append("\n");
-
-        if (userSession.isAdmin()) {
-            info.append("🔓 Modo Administrador: Acceso total\n");
-        } else {
-            info.append("🔒 Modo Usuario: SOLO LECTURA\n");
-        }
-
-        if (!fsNode.isDirectory()) {
-            info.append("📦 Tamaño: ").append(fsNode.getSizeInBlocks()).append(" bloques\n");
-            info.append("🔗 Primer bloque: ").append(fsNode.getFirstBlock()).append("\n");
-        } else {
-            int count = (fsNode.getChildren() != null) ? fsNode.getChildren().size() : 0;
-            info.append("📊 Contenido: ").append(count).append(" elementos\n");
-        }
-
-        info.append("\n══════════════════════════════");
-        infoArea.setText(info.toString());
+    if (selectedNode == null) {
+        infoArea.setText("No hay ningún elemento seleccionado.");
+        return;
     }
+
+    Object userObj = selectedNode.getUserObject();
+
+    if (!(userObj instanceof FileSystemNode)) {
+        infoArea.setText("No hay información disponible para este elemento.");
+        return;
+    }
+
+    FileSystemNode fsNode = (FileSystemNode) userObj;
+
+    StringBuilder info = new StringBuilder();
+
+    info.append("INFORMACION DEL ELEMENTO\n");
+    info.append("====================================\n\n");
+
+    info.append("Nombre        : ").append(fsNode.getName()).append("\n");
+    info.append("Tipo          : ")
+        .append(fsNode.isDirectory() ? "Directorio" : "Archivo").append("\n");
+    info.append("Propietario   : ").append(fsNode.getOwner()).append("\n");
+    info.append("Ruta completa : ").append(getFullPath(fsNode)).append("\n");
+    info.append("Modo de sesion: ")
+        .append(userSession.isAdmin() ? "Administrador" : "Usuario").append("\n");
+
+    info.append("\n------------------------------------\n");
+
+    if (!fsNode.isDirectory()) {
+
+        info.append("INFORMACION DEL ARCHIVO\n");
+        info.append("------------------------------------\n");
+
+        info.append("Tamano en disco : ")
+            .append(fsNode.getSizeInBlocks())
+            .append(" bloques\n");
+
+        info.append("Primer bloque   : ")
+            .append(fsNode.getFirstBlock())
+            .append("\n");
+
+    } else {
+
+        int count = (fsNode.getChildren() != null)
+                ? fsNode.getChildren().size()
+                : 0;
+
+        info.append("INFORMACION DEL DIRECTORIO\n");
+        info.append("------------------------------------\n");
+
+        info.append("Elementos contenidos : ")
+            .append(count)
+            .append("\n");
+    }
+
+    infoArea.setText(info.toString());
+}
 
     private String getFullPath(FileSystemNode node) {
         if (node == null) return "";
