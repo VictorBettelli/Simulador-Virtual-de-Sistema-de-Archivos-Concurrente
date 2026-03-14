@@ -14,12 +14,12 @@ public class UserSession {
     private String currentUser;
     private boolean isAdmin;
     
-    // Solo usuarios normales (sin public)
-    public static final String[] USERS = {"admin", "usuario1", "usuario2"};
+    // SOLO usuarios normales (sin admin ni public)
+    public static final String[] USERS = {"usuario1", "usuario2"};
     
     public UserSession() {
-        this.currentUser = "admin";
-        this.isAdmin = true;
+        this.currentUser = "usuario1"; // Por defecto, usuario1
+        this.isAdmin = false; // Por defecto, NO admin
     }
     
     public void setUser(String username, boolean admin) {
@@ -35,35 +35,55 @@ public class UserSession {
         return isAdmin;
     }
     
-    // En modo usuario: SOLO LECTURA de TODOS los archivos
+    // ===== PERMISOS =====
+    
     public boolean canRead(FileSystemNode node) {
-        if (isAdmin) return true; // Admin ve todo
+        if (isAdmin) return true;
         if (node == null) return false;
         
-        // En modo usuario: puede ver TODO (solo lectura)
-        return true;
+        String owner = node.getOwner();
+        
+        // Usuario normal: solo sus archivos
+        return owner != null && owner.equals(currentUser);
     }
     
-    // Escritura: solo admin
-    public boolean canWrite(FileSystemNode node) {
-        return isAdmin; // Solo admin puede escribir
-    }
-    
-    // Eliminar: solo admin
-    public boolean canDelete(FileSystemNode node) {
-        return isAdmin; // Solo admin puede eliminar
-    }
-    
-    // Crear: solo admin
     public boolean canCreateIn(FileSystemNode parent) {
-        return isAdmin; // Solo admin puede crear
+        if (isAdmin) return true;
+        if (parent == null) return false;
+        
+        String owner = parent.getOwner();
+        return owner != null && owner.equals(currentUser);
+    }
+    
+    public boolean canModify(FileSystemNode node) {
+        if (isAdmin) return true;
+        if (node == null) return false;
+        
+        String owner = node.getOwner();
+        return owner != null && owner.equals(currentUser);
+    }
+    
+    public boolean canDelete(FileSystemNode node) {
+        if (isAdmin) return true;
+        if (node == null) return false;
+        
+        String owner = node.getOwner();
+        return owner != null && owner.equals(currentUser);
+    }
+    
+    public boolean canWrite(FileSystemNode node) {
+        if (isAdmin) return true;
+        if (node == null) return false;
+        
+        String owner = node.getOwner();
+        return owner != null && owner.equals(currentUser);
     }
     
     public String getModeDisplay() {
         if (isAdmin) {
-            return "Administrador (" + currentUser + ")";
+            return "Administrador";
         } else {
-            return "Usuario (" + currentUser + " - SOLO LECTURA)";
+            return "Usuario (" + currentUser + ")";
         }
     }
 }

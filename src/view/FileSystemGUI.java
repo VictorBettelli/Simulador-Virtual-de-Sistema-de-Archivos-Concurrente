@@ -20,11 +20,14 @@ import util.LinkedList;
 import util.Node;
 import config.UserSession;
 import java.io.File;
+import java.io.IOException;
 import test.TestCase;
 import test.TestCaseLoader;
 import javax.swing.JFileChooser;
 import javax.swing.filechooser.FileNameExtensionFilter;
+import model.JournalEntry;
 import persistence.FileSystemPersistence;
+import model.JournalManager;
 
 public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     private JTree fileTree;
@@ -33,6 +36,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     private FileSystemNode root;
     private Disk disk;
     private JPanel diskPanel;
+    private JournalManager journalManager;
     
     // Atributos para planificación
     private Scheduler scheduler;
@@ -88,11 +92,13 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         userSession = new UserSession();      
         disk = new Disk();
         desplazamientoTotal = 0;
+        journalManager = new JournalManager();
         initComponents();
         initFileSystem();
+        verificarJournalPendiente();
         
         // Crear operaciones y scheduler después de tener root
-        operaciones = new OperacionesArchivo(disk, root);
+        operaciones = new OperacionesArchivo(disk, root,journalManager);
         scheduler = new Scheduler(disk, operaciones, this);
         scheduler.start(); // Inicia el hilo del scheduler
         
@@ -104,6 +110,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         actualizarVistaProcesos();
         actualizarTablaAsignacion(); // Mostrar archivos iniciales
         actualizarPermisosInterfaz();
+        actualizarVistaJournal();
         
         // Timer para actualizar la GUI cada 500 ms
         updateTimer = new Timer(500, e -> actualizarVistaProcesos());
@@ -241,6 +248,11 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         journalTable.setRowHeight(22);
         journalTable.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 12));
         journalTable.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        // ===== AJUSTAR ANCHO DE COLUMNAS =====
+        journalTable.getColumnModel().getColumn(0).setPreferredWidth(80);  // Operación
+        journalTable.getColumnModel().getColumn(1).setPreferredWidth(200); // Archivo (más ancho)
+        journalTable.getColumnModel().getColumn(2).setPreferredWidth(60);  // Bloque
+        journalTable.getColumnModel().getColumn(3).setPreferredWidth(100); // Estado
         JScrollPane scrollJournal = new JScrollPane(journalTable);
         scrollJournal.setBorder(BorderFactory.createTitledBorder("Journaling"));
 
@@ -294,7 +306,11 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         JButton btnSave = new JButton("💾 Guardar");      
         JButton btnLoad = new JButton("📂 Cargar"); 
         JButton btnLoadTestCase = new JButton("📋 Cargar Caso Prueba");
-
+        JButton btnSimularFallo = new JButton("💥 Simular Fallo");
+        JButton btnLimpiarDisco = new JButton("🧹 Limpiar Disco");
+        JButton btnLimpiarJournal = new JButton("📄 Limpiar Journal");
+        JButton btnVerJournal = new JButton("📂 Ver Journal.txt");
+        
         btnCreateDir.addActionListener(e -> solicitarCrearDirectorio());
         btnCreateFile.addActionListener(e -> solicitarCrearArchivo());
         btnUpdate.addActionListener(e -> solicitarModificarNombre());
@@ -303,6 +319,10 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         btnSave.addActionListener(e -> guardarEstado());   
         btnLoad.addActionListener(e -> cargarEstado());
         btnLoadTestCase.addActionListener(e -> cargarCasoPrueba());
+        btnSimularFallo.addActionListener(e -> simularFallo());
+        btnLimpiarDisco.addActionListener(e -> limpiarDiscoCompleto());
+        btnLimpiarJournal.addActionListener(e -> limpiarJournal());
+        btnVerJournal.addActionListener(e -> abrirArchivoJournal());
 
         controlPanel.add(btnCreateDir);
         controlPanel.add(btnCreateFile);
@@ -312,6 +332,10 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         controlPanel.add(btnSave);   
         controlPanel.add(btnLoad);
         controlPanel.add(btnLoadTestCase);
+        controlPanel.add(btnSimularFallo);
+        controlPanel.add(btnLimpiarDisco);
+        controlPanel.add(btnLimpiarJournal);
+        controlPanel.add(btnVerJournal);
 
         // ===== PANEL DE PLANIFICACIÓN Y COLAS =====
         JPanel schedulerPanel = new JPanel(new BorderLayout());
@@ -579,6 +603,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             JOptionPane.showMessageDialog(this, 
                 "Estado guardado exitosamente en /data", 
                 "Éxito", JOptionPane.INFORMATION_MESSAGE);
+            actualizarVistaJournal();
         }
     }
     
@@ -587,18 +612,70 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             "¿Cargar estado guardado?\n" +
             "Se perderán los cambios no guardados.",
             "Cargar estado", JOptionPane.YES_NO_OPTION);
-        
+
         if (confirm == JOptionPane.YES_OPTION) {
-            reiniciarSistema();
-            
+            // NO llamar a reiniciarSistema() aquí porque crea un disco nuevo
+
+            // Mejor: detener scheduler pero mantener disk y root
+            if (scheduler != null) {
+                scheduler.detener();
+                try {
+                    scheduler.join(500);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            // Limpiar estructuras actuales pero no crear nuevas
+            root = new FileSystemNode(); // Esto sí, porque vamos a cargar uno nuevo
+            root.setName("/");
+            root.setOwner("admin");
+            root.setDirectory(true);
+            root.setParent(null);
+            root.setChildren(new LinkedList<>());
+
+            disk = new Disk(); // Esto también, porque cargaremos el disco del JSON
+
+            // Cargar datos
             LinkedList<Process> procesosCargados = new LinkedList<>();
             FileSystemPersistence.cargarTodo(root, disk, procesosCargados);
-            
+
+            // Recrear scheduler con los nuevos disk y root
+            operaciones = new OperacionesArchivo(disk, root, journalManager);
+            scheduler = new Scheduler(disk, operaciones, this);
+            int politicaSeleccionada = politicaCombo.getSelectedIndex();
+            scheduler.setPolitica(politicaSeleccionada);
+            scheduler.setModoManual(chkModoManual.isSelected());
+            scheduler.start();
+
+            procesosActivos = new LinkedList<>();
+            lockManager = new LockManager();
+
+            // Crear procesos a partir de los cargados
+            Node<Process> currentProc = procesosCargados.getHead();
+            while (currentProc != null) {
+                Process p = currentProc.data;
+                FileSystemNode archivoProc = p.getArchivo();
+                RWLock lock;
+                if (p.getOperacion().equals("CREATE")) {
+                    lock = lockManager.getLock(p.getPadre());
+                } else {
+                    lock = lockManager.getLock(archivoProc);
+                }
+                ProcesoHilo hilo = new ProcesoHilo(p, archivoProc, lock, scheduler, disk, lockManager, this);
+                synchronized (procesosActivos) {
+                    procesosActivos.add(hilo);
+                }
+                hilo.start();
+                currentProc = currentProc.next;
+            }
+
             refreshTree();
             updateDiskView();
             actualizarVistaProcesos();
             actualizarTablaAsignacion();
-            
+            actualizarVistaJournal();
+
             JOptionPane.showMessageDialog(this, 
                 "Estado cargado exitosamente", 
                 "Éxito", JOptionPane.INFORMATION_MESSAGE);
@@ -761,14 +838,64 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         if (result == JFileChooser.APPROVE_OPTION) {
             File archivo = fileChooser.getSelectedFile();
 
+            // ===== NUEVO: Verificar si el disco tiene archivos =====
+            if (tieneArchivos(root)) {
+                int respuesta = JOptionPane.showConfirmDialog(this,
+                    "⚠️ El disco actual tiene archivos.\n" +
+                    "Para evitar conflictos con las posiciones del JSON,\n" +
+                    "es RECOMENDABLE limpiar el disco primero.\n\n" +
+                    "¿Desea limpiar el disco antes de cargar?",
+                    "Confirmar carga", 
+                    JOptionPane.YES_NO_CANCEL_OPTION, 
+                    JOptionPane.WARNING_MESSAGE);
+
+                if (respuesta == JOptionPane.CANCEL_OPTION) {
+                    return; // Cancelar carga
+                }
+
+                if (respuesta == JOptionPane.YES_OPTION) {
+                    limpiarDiscoCompleto(); // Limpia el disco
+                    // Después de limpiar, continuamos con la carga
+                }
+                // Si dice NO, continúa con la carga (puede haber conflictos)
+            }
+
             try {
                 TestCase testCase = TestCaseLoader.cargarTestCase(archivo.getAbsolutePath());
 
                 if (testCase != null) {
-                    reiniciarSistema();
+                    // ===== NUEVO: Si no se limpió, preguntar si quiere reiniciar =====
+                    if (tieneArchivos(root)) {
+                        int reiniciar = JOptionPane.showConfirmDialog(this,
+                            "¿Desea reiniciar el sistema antes de cargar?\n" +
+                            "(Esto eliminará los archivos actuales)",
+                            "Reiniciar sistema", 
+                            JOptionPane.YES_NO_OPTION);
+
+                        if (reiniciar == JOptionPane.YES_OPTION) {
+                            reiniciarSistema();
+                        }
+                    } else {
+                        reiniciarSistema(); // Si está vacío, reiniciamos normalmente
+                    }
 
                     LinkedList<Process> procesosCreados = new LinkedList<>();
                     TestCaseLoader.aplicarTestCase(testCase, root, disk, scheduler, procesosCreados);
+
+                    // Verificar si hubo errores al asignar bloques
+                    int errores = 0;
+                    Node<Process> checkProc = procesosCreados.getHead();
+                    while (checkProc != null) {
+                        Process p = checkProc.data;
+                        if (p.getArchivo() != null && p.getArchivo().getFirstBlock() == -1) {
+                            errores++;
+                        }
+                        checkProc = checkProc.next;
+                    }
+
+                    if (errores > 0) {
+                        logArea.append("⚠️ " + errores + " archivos no pudieron asignarse (bloques ocupados)\n");
+                    }
 
                     // Establecer el número de solicitudes esperadas en el scheduler
                     scheduler.setSolicitudesEsperadas(procesosCreados.size());
@@ -795,16 +922,29 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
                     updateDiskView();
                     actualizarVistaProcesos();
                     actualizarTablaAsignacion();
+                    actualizarVistaJournal();
 
                     logArea.append("📋 Caso de prueba cargado: " + testCase.getTestId() + "\n");
                     logArea.append("   Cabezal inicial: " + testCase.getInitialHead() + "\n");
                     logArea.append("   Solicitudes: " + testCase.getRequests().size() + "\n");
+                    if (errores > 0) {
+                        logArea.append("   ⚠️ Errores de asignación: " + errores + "\n");
+                    }
+
+                    String mensaje = "Caso de prueba cargado exitosamente:\n" +
+                                     "ID: " + testCase.getTestId() + "\n" +
+                                     "Solicitudes: " + testCase.getRequests().size();
+
+                    if (errores > 0) {
+                        mensaje += "\n\n⚠️ ADVERTENCIA: " + errores + 
+                                   " archivos no pudieron asignarse por bloques ocupados.\n" +
+                                   "Use '🧹 Limpiar Disco' y vuelva a cargar.";
+                    }
 
                     JOptionPane.showMessageDialog(this, 
-                        "Caso de prueba cargado exitosamente:\n" +
-                        "ID: " + testCase.getTestId() + "\n" +
-                        "Solicitudes: " + testCase.getRequests().size(),
-                        "Éxito", JOptionPane.INFORMATION_MESSAGE);
+                        mensaje,
+                        errores > 0 ? "Advertencia" : "Éxito", 
+                        errores > 0 ? JOptionPane.WARNING_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
                 }
 
             } catch (Exception e) {
@@ -816,6 +956,14 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         }
     }
 
+    // Método auxiliar que ya tienes
+    private boolean tieneArchivos(FileSystemNode node) {
+        if (node.getChildren() != null && node.getChildren().size() > 0) {
+            return true;
+        }
+        return false;
+    }
+
     private void reiniciarSistema() {
         if (scheduler != null) {
             scheduler.detener();
@@ -825,34 +973,34 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
                 e.printStackTrace();
             }
         }
-        disk = new Disk();
-        root = new FileSystemNode();
-        root.setName("/");
-        root.setOwner("admin");
-        root.setDirectory(true);
-        root.setParent(null);
-        root.setChildren(new LinkedList<>());
 
-        operaciones = new OperacionesArchivo(disk, root);
+        // Guardar journal antes de reiniciar
+        if (journalManager != null) {
+            journalManager.guardarJournal();
+        }
+
+        // NO crear nuevo disk y root aquí
+        // Simplemente detenemos el scheduler y lo reiniciamos
+
+        operaciones = new OperacionesArchivo(disk, root, journalManager);
         scheduler = new Scheduler(disk, operaciones, this);
-        
+
         int politicaSeleccionada = politicaCombo.getSelectedIndex();
         scheduler.setPolitica(politicaSeleccionada);
-        System.out.println("Reiniciando sistema con política: " + politicaSeleccionada);
-        
         scheduler.setModoManual(chkModoManual.isSelected());
         scheduler.start();
 
         procesosActivos = new LinkedList<>();
         lockManager = new LockManager();
 
-        logArea.setText("");
+        logArea.append("🔄 Sistema reiniciado\n");
         btnPaso.setEnabled(chkModoManual.isSelected());
-        
-        // Actualizar tabla (vacía al reiniciar)
+
         actualizarTablaAsignacion();
-        // Limpiar journal
-        journalModel.setRowCount(0);
+        actualizarVistaJournal();
+        actualizarVistaJournal();
+        updateDiskView();
+        refreshTree();
     }
 
     private void createDirectory(FileSystemNode parent, String name, String owner) {
@@ -1123,6 +1271,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             updateDiskView();
             actualizarVistaProcesos();
             actualizarTablaAsignacion();
+            actualizarVistaJournal();
         });
     }
 
@@ -1134,18 +1283,94 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             logArea.setCaretPosition(logArea.getDocument().getLength());
         });
     }
+    private void verificarJournalPendiente() {
+        LinkedList<JournalEntry> pendientes = journalManager.getEntradasPendientes();
+        if (pendientes.size() > 0) {
+            int respuesta = JOptionPane.showConfirmDialog(this,
+                "Se encontraron " + pendientes.size() + " operaciones pendientes en el journal.\n" +
+                "¿Desea deshacerlas para recuperar la consistencia?",
+                "Recuperación ante fallos", JOptionPane.YES_NO_OPTION);
+
+            if (respuesta == JOptionPane.YES_OPTION) {
+                journalManager.deshacerPendientes(root, disk);
+                refreshTree();
+                updateDiskView();
+                actualizarTablaAsignacion();
+                actualizarVistaJournal();
+                JOptionPane.showMessageDialog(this, "Recuperación completada.");
+            }
+        }
+    }
+    private void limpiarDiscoCompleto() {
+        int confirm = JOptionPane.showConfirmDialog(this,
+            "⚠️ ¿ESTÁ SEGURO?\n\n" +
+            "Esta operación ELIMINARÁ TODOS los archivos y directorios,\n" +
+            "dejando el disco completamente VACÍO.\n\n" +
+            "Se perderán todos los cambios no guardados.",
+            "Limpiar Disco", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+
+        if (confirm == JOptionPane.YES_OPTION) {
+            // Detener scheduler
+            if (scheduler != null) {
+                scheduler.detener();
+                try {
+                    scheduler.join(500);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            // Crear NUEVO disco vacío
+            disk = new Disk();
+
+            // Crear NUEVO root vacío (solo la raíz)
+            root = new FileSystemNode();
+            root.setName("/");
+            root.setOwner("admin");
+            root.setDirectory(true);
+            root.setParent(null);
+            root.setChildren(new LinkedList<>()); // Sin hijos
+
+            // Reiniciar journal (opcional - mantener o limpiar)
+            int mantenerJournal = JOptionPane.showConfirmDialog(this,
+                "¿Mantener el journal actual?\n" +
+                "(Recomendado: NO para empezar limpio)",
+                "Journal", JOptionPane.YES_NO_OPTION);
+
+            if (mantenerJournal == JOptionPane.NO_OPTION) {
+                journalManager = new JournalManager(); // Crea journal vacío
+            }
+
+            // Recrear scheduler
+            operaciones = new OperacionesArchivo(disk, root, journalManager);
+            scheduler = new Scheduler(disk, operaciones, this);
+            int politicaSeleccionada = politicaCombo.getSelectedIndex();
+            scheduler.setPolitica(politicaSeleccionada);
+            scheduler.setModoManual(chkModoManual.isSelected());
+            scheduler.start();
+
+            procesosActivos = new LinkedList<>();
+            lockManager = new LockManager();
+
+            // Actualizar todas las vistas
+            refreshTree();
+            updateDiskView();
+            actualizarVistaProcesos();
+            actualizarTablaAsignacion();
+            actualizarVistaJournal();
+            logArea.setText("🧹 Disco limpiado completamente\n");
+
+            JOptionPane.showMessageDialog(this, 
+                "✅ Disco limpiado exitosamente.\n" +
+                "Ahora puede cargar cualquier JSON sin conflictos.",
+                "Disco Limpio", JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
 
     // ----- Métodos de solicitud de operaciones -----
     private void solicitarCrearDirectorio() {
-        if (!userSession.isAdmin()) {
-            JOptionPane.showMessageDialog(this, 
-                "Modo usuario: no tiene permisos para crear directorios", 
-                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
         JTextField nameField = new JTextField(20);
-        JTextField ownerField = new JTextField("usuario1", 20);
+        JTextField ownerField = new JTextField(userSession.getCurrentUser(), 20);
         JPanel panel = new JPanel(new GridLayout(0, 2, 5, 5));
         panel.add(new JLabel("Nombre:"));
         panel.add(nameField);
@@ -1154,11 +1379,19 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         FileSystemNode parentDir = getSelectedDirectory();
 
+        // VERIFICACIÓN DE PERMISOS
         if (!userSession.canCreateIn(parentDir)) {
-            JOptionPane.showMessageDialog(this, 
-                "No tiene permisos para crear directorios aquí", 
-                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            String mensaje = userSession.isAdmin() ? 
+                "No tiene permisos para crear directorios aquí" :
+                "Modo usuario: solo puede crear en sus propios directorios";
+            JOptionPane.showMessageDialog(this, mensaje, "Permiso denegado", JOptionPane.ERROR_MESSAGE);
             return;
+        }
+
+        // En modo usuario, el dueño debe ser el usuario actual
+        if (!userSession.isAdmin()) {
+            ownerField.setText(userSession.getCurrentUser());
+            ownerField.setEnabled(false);
         }
 
         String parentPath = (parentDir != null) ? getFullPath(parentDir) : "/";
@@ -1166,32 +1399,54 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         panel.add(new JLabel("Directorio actual: " + parentPath));
 
         int result = JOptionPane.showConfirmDialog(this, panel, "Crear directorio", JOptionPane.OK_CANCEL_OPTION);
+
         if (result == JOptionPane.OK_OPTION) {
             String name = nameField.getText().trim();
             String owner = ownerField.getText().trim();
+
             if (name.isEmpty() || owner.isEmpty()) {
                 JOptionPane.showMessageDialog(this, "Nombre y dueño no pueden estar vacíos", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
+
+            // En modo usuario, verificar dueño
+            if (!userSession.isAdmin() && !owner.equals(userSession.getCurrentUser())) {
+                JOptionPane.showMessageDialog(this, 
+                    "Modo usuario: no puede crear directorios para otro usuario", 
+                    "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
             if (parentDir == null) {
                 JOptionPane.showMessageDialog(this, "Debe seleccionar un directorio padre", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
+
             createDirectory(parentDir, name, owner);
             refreshTree();
+            logArea.append("📁 Directorio creado: " + name + " en " + parentPath + "\n");
+        }
+    }
+    private void abrirArchivoJournal() {
+        try {
+            File file = new File("data/journal.txt");
+            if (file.exists()) {
+                Desktop.getDesktop().open(file); // Abre con programa predeterminado
+            } else {
+                JOptionPane.showMessageDialog(this, 
+                    "El archivo journal.txt no existe.",
+                    "Información", JOptionPane.INFORMATION_MESSAGE);
+            }
+        } catch (IOException e) {
+            JOptionPane.showMessageDialog(this, 
+                "Error al abrir el archivo: " + e.getMessage(),
+                "Error", JOptionPane.ERROR_MESSAGE);
         }
     }
 
     private void solicitarCrearArchivo() {
-        if (!userSession.isAdmin()) {
-            JOptionPane.showMessageDialog(this, 
-                "Modo usuario: no tiene permisos para crear archivos", 
-                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
         JTextField nameField = new JTextField(20);
-        JTextField ownerField = new JTextField("usuario1", 20);
+        JTextField ownerField = new JTextField(userSession.getCurrentUser(), 20); // Dueño por defecto = usuario actual
         JTextField sizeField = new JTextField("5", 10);
         JPanel panel = new JPanel(new GridLayout(0, 2, 5, 5));
         panel.add(new JLabel("Nombre:"));
@@ -1203,42 +1458,73 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         FileSystemNode parentDir = getSelectedDirectory();
 
+        // VERIFICACIÓN DE PERMISOS CORREGIDA
         if (!userSession.canCreateIn(parentDir)) {
-            JOptionPane.showMessageDialog(this, 
-                "No tiene permisos para crear archivos en este directorio", 
-                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            String mensaje = userSession.isAdmin() ? 
+                "No tiene permisos para crear archivos en este directorio" :
+                "Modo usuario: solo puede crear en sus propios directorios (dueño: " + parentDir.getOwner() + ")";
+            JOptionPane.showMessageDialog(this, mensaje, "Permiso denegado", JOptionPane.ERROR_MESSAGE);
             return;
+        }
+
+        // En modo usuario, el dueño debe ser el usuario actual
+        if (!userSession.isAdmin()) {
+            ownerField.setText(userSession.getCurrentUser());
+            ownerField.setEnabled(false); // No puede cambiar el dueño
         }
 
         String parentPath = (parentDir != null) ? getFullPath(parentDir) : "/";
         panel.add(new JLabel(""));
         panel.add(new JLabel("Directorio actual: " + parentPath));
+        panel.add(new JLabel(""));
+        panel.add(new JLabel("Dueño fijado: " + (userSession.isAdmin() ? "editable" : userSession.getCurrentUser())));
 
         int result = JOptionPane.showConfirmDialog(this, panel, "Crear archivo", JOptionPane.OK_CANCEL_OPTION);
+
         if (result == JOptionPane.OK_OPTION) {
             String name = nameField.getText().trim();
             String owner = ownerField.getText().trim();
+
             if (name.isEmpty() || owner.isEmpty()) {
                 JOptionPane.showMessageDialog(this, "Nombre y dueño no pueden estar vacíos", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
+
+            // En modo usuario, verificar que el dueño sea el usuario actual
+            if (!userSession.isAdmin() && !owner.equals(userSession.getCurrentUser())) {
+                JOptionPane.showMessageDialog(this, 
+                    "Modo usuario: no puede crear archivos para otro usuario", 
+                    "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
             if (parentDir == null) {
                 JOptionPane.showMessageDialog(this, "Debe seleccionar un directorio padre", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
+
             try {
                 int size = Integer.parseInt(sizeField.getText().trim());
                 if (size <= 0) throw new NumberFormatException();
-                
+
+                // Registrar en journal ANTES de ejecutar
+                String rutaCompleta = getFullPath(parentDir) + "/" + name;
+                JournalEntry entry = new JournalEntry("CREATE", rutaCompleta, owner, -1, size);
+                journalManager.agregarEntrada(entry);
+                agregarEntradaJournal("CREATE", name, -1, "PENDIENTE");
+
                 Process p = new Process("CREATE", name, owner, size, parentDir);
                 RWLock lock = lockManager.getLock(parentDir);
                 ProcesoHilo hilo = new ProcesoHilo(p, parentDir, lock, scheduler, disk, lockManager, this);
+
                 synchronized (procesosActivos) {
                     procesosActivos.add(hilo);
                 }
                 hilo.start();
                 actualizarVistaProcesos();
-                
+
+                logArea.append("📝 Proceso de creación creado: " + name + " en " + parentPath + "\n");
+
             } catch (NumberFormatException e) {
                 JOptionPane.showMessageDialog(this, "Tamaño debe ser un número entero positivo", "Error", JOptionPane.ERROR_MESSAGE);
             }
@@ -1246,11 +1532,6 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     }
 
     private void solicitarModificarNombre() {
-        if (!userSession.isAdmin()) {
-            JOptionPane.showMessageDialog(this, "Modo usuario: no tiene permisos para modificar nombres", "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-
         DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
         if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
             JOptionPane.showMessageDialog(this, "Seleccione un elemento para modificar", "Error", JOptionPane.ERROR_MESSAGE);
@@ -1259,36 +1540,131 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
 
+        // VERIFICACIÓN DE PERMISOS CORREGIDA
+        if (!userSession.canModify(fsNode)) {
+            String mensaje = userSession.isAdmin() ? 
+                "No tiene permisos para modificar este elemento" :
+                "Modo usuario: solo puede modificar sus propios archivos (dueño: " + fsNode.getOwner() + ")";
+            JOptionPane.showMessageDialog(this, mensaje, "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
         if (fsNode == root) {
             JOptionPane.showMessageDialog(this, "No se puede modificar el nombre de la raíz", "Error", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
+        // Mostrar dueño en el diálogo
         String nuevoNombre = JOptionPane.showInputDialog(this,
-            "Nuevo nombre para '" + fsNode.getName() + "':",
+            "Modificar nombre de '" + fsNode.getName() + "'\n" +
+            "Dueño: " + fsNode.getOwner() + "\n" +
+            "Nuevo nombre:",
             "Modificar nombre", JOptionPane.QUESTION_MESSAGE);
 
         if (nuevoNombre != null && !nuevoNombre.trim().isEmpty()) {
+            // Registrar en journal ANTES de ejecutar
+            String rutaCompleta = fsNode.getFullPath();
+            JournalEntry entry = new JournalEntry("UPDATE", rutaCompleta, fsNode.getName(), nuevoNombre.trim());
+            journalManager.agregarEntrada(entry);
+            agregarEntradaJournal("UPDATE", fsNode.getName(), fsNode.getFirstBlock(), "PENDIENTE");
+
             Process p = new Process("UPDATE", fsNode, userSession.getCurrentUser());
             p.setNuevoNombre(nuevoNombre.trim());
             RWLock lock = lockManager.getLock(fsNode);
             ProcesoHilo hilo = new ProcesoHilo(p, fsNode, lock, scheduler, disk, lockManager, this);
+
             synchronized (procesosActivos) {
                 procesosActivos.add(hilo);
             }
             hilo.start();
             actualizarVistaProcesos();
+
+            logArea.append("✏️ Proceso de modificación creado: " + fsNode.getName() + " → " + nuevoNombre + "\n");
+        }
+    }
+    private void simularFallo() {
+        int confirm = JOptionPane.showConfirmDialog(this,
+            "¿Simular fallo del sistema AHORA?\n" +
+            "Se interrumpirá la ejecución y se reiniciará,\n" +
+            "dejando las operaciones PENDIENTES en el journal.",
+            "Simular Fallo", JOptionPane.YES_NO_OPTION);
+
+        if (confirm == JOptionPane.YES_OPTION) {
+            // Guardar journal
+            if (journalManager != null) {
+                journalManager.guardarJournal();
+            }
+
+            // Mostrar pendientes
+            LinkedList<JournalEntry> pendientes = journalManager.getEntradasPendientes();
+            StringBuilder mensaje = new StringBuilder("⚠️ FALLO SIMULADO\n\n");
+            mensaje.append("Operaciones PENDIENTES en journal:\n");
+
+            Node<JournalEntry> current = pendientes.getHead();
+            while (current != null) {
+                JournalEntry e = current.data;
+                mensaje.append("  • ").append(e.getOperacion())
+                       .append(" ").append(e.getRutaArchivo())
+                       .append(" (").append(e.getEstado()).append(")\n");
+                current = current.next;
+            }
+
+            // Detener scheduler pero NO crear nuevo disk
+            if (scheduler != null) {
+                scheduler.detener();
+            }
+
+            JOptionPane.showMessageDialog(this, mensaje.toString(), "Fallo Simulado", JOptionPane.WARNING_MESSAGE);
+
+            int recuperar = JOptionPane.showConfirmDialog(this,
+                "¿Reiniciar el sistema y recuperar del journal?",
+                "Recuperación", JOptionPane.YES_NO_OPTION);
+
+            if (recuperar == JOptionPane.YES_OPTION) {
+                // Recuperar: deshacer pendientes
+                journalManager.deshacerPendientes(root, disk);
+
+                // Reiniciar scheduler con los MISMOS disk y root
+                reiniciarScheduler();
+
+                JOptionPane.showMessageDialog(this, "Recuperación completada.");
+            } else {
+                // No recuperar: solo reiniciar scheduler
+                reiniciarScheduler();
+            }
+
+            // Actualizar vistas
+            actualizarVistaJournal();
+            updateDiskView();
+            refreshTree();
+            actualizarTablaAsignacion();
         }
     }
 
-    private void solicitarEliminar() {
-        if (!userSession.isAdmin()) {
-            JOptionPane.showMessageDialog(this, 
-                "Modo usuario: no tiene permisos para eliminar elementos", 
-                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
-            return;
+    private void reiniciarScheduler() {
+        if (scheduler != null) {
+            scheduler.detener();
+            try {
+                scheduler.join(500);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
         }
 
+        operaciones = new OperacionesArchivo(disk, root, journalManager);
+        scheduler = new Scheduler(disk, operaciones, this);
+
+        int politicaSeleccionada = politicaCombo.getSelectedIndex();
+        scheduler.setPolitica(politicaSeleccionada);
+        scheduler.setModoManual(chkModoManual.isSelected());
+        scheduler.start();
+
+        procesosActivos = new LinkedList<>();
+        lockManager = new LockManager();
+    }
+    
+
+    private void solicitarEliminar() {
         DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
         if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
             JOptionPane.showMessageDialog(this, "Seleccione un elemento para eliminar", "Error", JOptionPane.ERROR_MESSAGE);
@@ -1297,10 +1673,12 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
 
+        // VERIFICACIÓN DE PERMISOS CORREGIDA
         if (!userSession.canDelete(fsNode)) {
-            JOptionPane.showMessageDialog(this, 
-                "No tiene permisos para eliminar este elemento", 
-                "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            String mensaje = userSession.isAdmin() ? 
+                "No tiene permisos para eliminar este elemento" :
+                "Modo usuario: solo puede eliminar sus propios archivos";
+            JOptionPane.showMessageDialog(this, mensaje, "Permiso denegado", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
@@ -1309,9 +1687,13 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             return;
         }
 
+        // Mostrar información del dueño en el mensaje de confirmación
+        String mensajeConfirmacion = "¿Está seguro de eliminar " + fsNode.getFullPath() + "?\n" +
+                                     "Dueño: " + fsNode.getOwner() + "\n" +
+                                     (fsNode.isDirectory() ? "Se eliminarán todos sus contenidos." : "");
+
         int confirm = JOptionPane.showConfirmDialog(this,
-                "¿Está seguro de eliminar " + fsNode.getFullPath() + "?\n" +
-                (fsNode.isDirectory() ? "Se eliminarán todos sus contenidos." : ""),
+                mensajeConfirmacion,
                 "Confirmar eliminación", JOptionPane.YES_NO_OPTION);
 
         if (confirm == JOptionPane.YES_OPTION) {
@@ -1323,6 +1705,130 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             }
             hilo.start();
             actualizarVistaProcesos();
+
+            // Mensaje de log
+            logArea.append("🗑️ Proceso de eliminación creado para: " + fsNode.getName() + "\n");
+        }
+    }
+    // ===== MÉTODO PARA ACTUALIZAR LA VISTA DEL JOURNAL =====
+    private void actualizarVistaJournal() {
+        SwingUtilities.invokeLater(() -> {
+            journalModel.setRowCount(0); // Limpiar la tabla
+
+            if (journalManager == null) {
+                System.out.println("journalManager es null");
+                return;
+            }
+
+            LinkedList<JournalEntry> entradas = journalManager.getEntradas();
+            System.out.println("Entradas en journal: " + (entradas != null ? entradas.size() : "null"));
+
+            if (entradas == null || entradas.size() == 0) {
+                System.out.println("No hay entradas en journal");
+                journalModel.fireTableDataChanged();
+                return;
+            }
+
+            Node<JournalEntry> current = entradas.getHead();
+            java.util.ArrayList<JournalEntry> listaTemporal = new java.util.ArrayList<>();
+            while (current != null) {
+                listaTemporal.add(current.data);
+                current = current.next;
+            }
+
+            for (int i = listaTemporal.size() - 1; i >= 0; i--) {
+                JournalEntry e = listaTemporal.get(i);
+
+                String archivo = e.getRutaArchivo();
+                if (archivo != null && archivo.length() > 25) {
+                    archivo = "..." + archivo.substring(archivo.length() - 22);
+                }
+
+                String bloqueStr = (e.getPrimerBloque() == -1) ? "⏳" : String.valueOf(e.getPrimerBloque());
+
+                String estadoStr = e.getEstado();
+                if (e.getEstado() != null) {
+                    if (e.getEstado().equals("PENDIENTE")) {
+                        estadoStr = "⏳ " + e.getEstado();
+                    } else if (e.getEstado().equals("CONFIRMADA")) {
+                        estadoStr = "✅ " + e.getEstado();
+                    } else if (e.getEstado().equals("DESHECHA")) {
+                        estadoStr = "↩️ " + e.getEstado();
+                    }
+                }
+
+                journalModel.addRow(new Object[]{
+                    e.getOperacion(),
+                    archivo,
+                    bloqueStr,
+                    estadoStr
+                });
+            }
+
+            while (journalModel.getRowCount() > 30) {
+                journalModel.removeRow(0);
+            }
+
+            journalModel.fireTableDataChanged();
+            journalTable.repaint();
+        });
+    }
+    // Para limpiar el journal si es necesario
+    private void limpiarJournal() {
+        int confirm = JOptionPane.showConfirmDialog(this,
+            "¿Eliminar TODAS las entradas del journal?\n\n" +
+            "Esta operación:\n" +
+            "• Borrará el archivo journal.txt\n" +
+            "• Vaciará la tabla de journal\n" +
+            "• No afectará los archivos del sistema\n\n" +
+            "¿Está seguro?",
+            "Limpiar Journal", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+
+        if (confirm == JOptionPane.YES_OPTION) {
+            try {
+                // 1. LIMPIAR EL JOURNAL MANAGER (nuevo objeto)
+                JournalManager nuevoJournal = new JournalManager();
+                this.journalManager = nuevoJournal;
+
+                // 2. Actualizar la referencia en OperacionesArchivo
+                if (operaciones != null) {
+                    operaciones.setJournalManager(journalManager);
+                }
+
+                // 3. Borrar el archivo físico
+                File journalFile = new File("data/journal.txt");
+                if (journalFile.exists()) {
+                    boolean deleted = journalFile.delete();
+                    if (deleted) {
+                        logArea.append("📄 Archivo journal.txt eliminado\n");
+                    }
+                }
+
+                // 4. Crear archivo vacío
+                journalFile.getParentFile().mkdirs();
+                journalFile.createNewFile();
+
+                // 5. Guardar el journal vacío
+                journalManager.guardarJournal();
+
+                // 6. ACTUALIZAR LA VISTA - ESTO ES CRÍTICO
+                actualizarVistaJournal(); // <-- LLAMAR EXPLÍCITAMENTE
+
+                // 7. Forzar actualización de la UI
+                SwingUtilities.invokeLater(() -> {
+                    journalModel.fireTableDataChanged();
+                    journalTable.repaint();
+                });
+
+                JOptionPane.showMessageDialog(this, 
+                    "✅ Journal limpiado exitosamente",
+                    "Journal limpiado", JOptionPane.INFORMATION_MESSAGE);
+
+            } catch (IOException e) {
+                JOptionPane.showMessageDialog(this, 
+                    "Error al limpiar el journal:\n" + e.getMessage(),
+                    "Error", JOptionPane.ERROR_MESSAGE);
+            }
         }
     }
 
