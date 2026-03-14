@@ -65,6 +65,12 @@ public class FileSystemNode {
         if (parent.getParent() == null) return parent.getName() + name;
         return parent.getFullPath() + "/" + name;
     }
+        
+    public static String getRutaCompleta(FileSystemNode node) {
+        if (node == null) return "";
+        if (node.getParent() == null) return node.getName();
+        return getRutaCompleta(node.getParent()) + "/" + node.getName();
+    }
 
     @Override
     public String toString() {
