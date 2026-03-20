@@ -21,7 +21,8 @@ public class Scheduler extends Thread {
     private boolean modoManual = false;
     private boolean siguientePermitido = false;
     private int desplazamientoTotal = 0;
-    private int retardoMs = 0; // Nuevo: retardo en milisegundos para modo automático
+    private int retardoMs = 0;
+    private int contadorCiclos = 0; // Contador de ciclos
     
     public Scheduler(Disk disk, OperacionesArchivo operaciones, LogListener logListener) {
         this.disk = disk;
@@ -50,7 +51,12 @@ public class Scheduler extends Thread {
         return desplazamientoTotal;
     }
     
-    public void setRetardoMs(int ms) { // Nuevo setter
+    // Getter para el contador de ciclos
+    public int getContadorCiclos() {
+        return contadorCiclos;
+    }
+    
+    public void setRetardoMs(int ms) {
         this.retardoMs = ms;
     }
     
@@ -247,10 +253,14 @@ public class Scheduler extends Thread {
     }
     
     private void atenderSolicitud(SolicitudES solicitud) {
+        // INCREMENTAR CICLO CADA VEZ QUE SE ATIENDE UNA SOLICITUD
+        contadorCiclos++;
+        
         ProcesoHilo hilo = solicitud.getProceso();
         Process datos = hilo.getDatosProceso();
         int cabezaAntes = cabezaActual;
         boolean exito = false;
+        
         try {
             switch (datos.getOperacion()) {
                 case "CREATE":
@@ -280,12 +290,12 @@ public class Scheduler extends Thread {
             cabezaActual = bloque;
             if (logListener != null) {
                 String nombreArchivo = (datos.getArchivo() != null) ? datos.getArchivo().getName() : datos.getNombreArchivo();
-                String mensaje = "Cabezal: " + cabezaAntes + " → " + bloque + " (dist " + distancia + ") - P" + datos.getId() + " [" + datos.getOperacion() + "] " + nombreArchivo;
+                String mensaje = "🕐 CICLO #" + contadorCiclos + ": Cabezal: " + cabezaAntes + " → " + bloque + " (dist " + distancia + ") - P" + datos.getId() + " [" + datos.getOperacion() + "] " + nombreArchivo;
                 logListener.onMovimiento(mensaje);
             }
         } else {
             if (logListener != null) {
-                String mensaje = "Operación sin bloque: " + datos.getOperacion() + " P" + datos.getId();
+                String mensaje = "🕐 CICLO #" + contadorCiclos + ": Operación sin bloque: " + datos.getOperacion() + " P" + datos.getId();
                 logListener.onMovimiento(mensaje);
             }
         }
@@ -296,7 +306,6 @@ public class Scheduler extends Thread {
         
         // Si no estamos en modo manual y hay retardo, pausamos
         if (!modoManual && retardoMs > 0) {
-            System.out.println("Durmiendo " + retardoMs + " ms después de atender P" + datos.getId());
             try {
                 Thread.sleep(retardoMs);
             } catch (InterruptedException e) {

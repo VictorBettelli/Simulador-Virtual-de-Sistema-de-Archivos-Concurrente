@@ -70,6 +70,9 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
     // Timer para actualización automática
     private Timer updateTimer;
     
+    private int contadorCiclos = 0;
+    private JLabel ciclosLabel;
+    
     // Controles de modo manual
     private JCheckBox chkModoManual;
     private JButton btnPaso;
@@ -119,7 +122,10 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         actualizarVistaJournal();
         
         // Timer para actualizar la GUI cada 500 ms
-        updateTimer = new Timer(500, e -> actualizarVistaProcesos());
+        updateTimer = new Timer(500, e -> {
+        actualizarVistaProcesos();
+        actualizarContadorCiclos(); 
+        });
         updateTimer.start();
     }
 
@@ -148,6 +154,13 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         currentModeLabel = new JLabel("  " + userSession.getModeDisplay());
         topPanel.add(currentModeLabel);
+        
+            // En el panel superior (topPanel)
+        ciclosLabel = new JLabel("🕐 CICLOS: 0");
+        ciclosLabel.setFont(new Font("Monospaced", Font.BOLD, 14));
+        ciclosLabel.setForeground(new Color(0, 100, 0));
+        topPanel.add(new JLabel("   |   "));
+        topPanel.add(ciclosLabel);
 
         add(topPanel, BorderLayout.NORTH);
 
@@ -317,6 +330,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         JButton btnCreateDir = new JButton("Crear Directorio");
         JButton btnCreateFile = new JButton("Crear Archivo");
+        JButton btnRead = new JButton("📖 Leer Archivo"); 
         JButton btnUpdate = new JButton("Modificar Nombre");
         JButton btnDelete = new JButton("Eliminar");
         JButton btnRefresh = new JButton("Refrescar");
@@ -330,6 +344,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
         
         btnCreateDir.addActionListener(e -> solicitarCrearDirectorio());
         btnCreateFile.addActionListener(e -> solicitarCrearArchivo());
+        btnRead.addActionListener(e -> solicitarLeerArchivo());
         btnUpdate.addActionListener(e -> solicitarModificarNombre());
         btnDelete.addActionListener(e -> solicitarEliminar());
         btnRefresh.addActionListener(e -> refreshTree());
@@ -343,6 +358,7 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         controlPanel.add(btnCreateDir);
         controlPanel.add(btnCreateFile);
+        controlPanel.add(btnRead);
         controlPanel.add(btnUpdate);
         controlPanel.add(btnDelete);
         controlPanel.add(btnRefresh);
@@ -585,7 +601,20 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
                                         text.equals("Eliminar")) {
                                         button.setEnabled(isAdmin);
                                     }
-                                    if (text.equals("Refrescar")) {
+
+                                    // Botón de lectura SIEMPRE habilitado
+                                    if (text.equals("📖 Leer Archivo")) {
+                                        button.setEnabled(true);
+                                    }
+
+                                    if (text.equals("Refrescar") ||
+                                        text.equals("💾 Guardar") ||
+                                        text.equals("📂 Cargar") ||
+                                        text.equals("📋 Cargar Caso Prueba") ||
+                                        text.equals("💥 Simular Fallo") ||
+                                        text.equals("🧹 Limpiar Disco") ||
+                                        text.equals("📄 Limpiar Journal") ||
+                                        text.equals("📂 Ver Journal.txt")) {
                                         button.setEnabled(true);
                                     }
                                 }
@@ -1463,6 +1492,86 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
             logArea.append("📁 Directorio creado: " + name + " en " + parentPath + "\n");
         }
     }
+    private void solicitarLeerArchivo() {
+        DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) fileTree.getLastSelectedPathComponent();
+        if (selectedNode == null || !(selectedNode.getUserObject() instanceof FileSystemNode)) {
+            JOptionPane.showMessageDialog(this, "Seleccione un archivo para leer", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        FileSystemNode fsNode = (FileSystemNode) selectedNode.getUserObject();
+
+        // Verificar que sea un archivo, no un directorio
+        if (fsNode.isDirectory()) {
+            JOptionPane.showMessageDialog(this, 
+                "No se puede leer un directorio.\nSeleccione un archivo.",
+                "Operación no válida", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        // Verificar permisos de lectura
+        if (!userSession.canRead(fsNode)) {
+            String mensaje = userSession.isAdmin() ? 
+                "No tiene permisos para leer este archivo" :
+                "Modo usuario: solo puede leer sus propios archivos (dueño: " + fsNode.getOwner() + ")";
+            JOptionPane.showMessageDialog(this, mensaje, "Permiso denegado", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        // Crear proceso de lectura
+        Process p = new Process("READ", fsNode, userSession.getCurrentUser());
+        p.setBloqueSolicitado(fsNode.getFirstBlock()); // Leer desde el primer bloque
+
+        // Obtener lock de lectura
+        RWLock lock = lockManager.getLock(fsNode);
+
+        // Crear hilo
+        ProcesoHilo hilo = new ProcesoHilo(p, fsNode, lock, scheduler, disk, lockManager, this);
+
+        synchronized (procesosActivos) {
+            procesosActivos.add(hilo);
+        }
+        hilo.start();
+        actualizarVistaProcesos();
+
+        // Mostrar información de lectura en log
+        logArea.append("📖 Proceso de lectura creado para: " + fsNode.getName() + 
+                       " (bloque " + fsNode.getFirstBlock() + ")\n");
+
+        // Mostrar diálogo de información
+        StringBuilder info = new StringBuilder();
+        info.append("📖 LECTURA DE ARCHIVO\n\n");
+        info.append("Archivo: ").append(fsNode.getName()).append("\n");
+        info.append("Dueño: ").append(fsNode.getOwner()).append("\n");
+        info.append("Ruta: ").append(fsNode.getFullPath()).append("\n");
+        info.append("Tamaño: ").append(fsNode.getSizeInBlocks()).append(" bloques\n");
+        info.append("Primer bloque: ").append(fsNode.getFirstBlock()).append("\n");
+
+        // Mostrar cadena de bloques
+        info.append("\nCadena de bloques:\n");
+        int currentBlock = fsNode.getFirstBlock();
+        Disk.Block[] blocks = disk.getBlocks();
+        int contador = 0;
+        while (currentBlock != -1 && contador < 20) {
+            info.append("  [" + currentBlock + "]");
+            if (blocks[currentBlock].getNext() != -1) {
+                info.append(" → ");
+            } else {
+                info.append(" (FIN)\n");
+            }
+            if ((contador + 1) % 5 == 0 && blocks[currentBlock].getNext() != -1) {
+                info.append("\n");
+            }
+            currentBlock = blocks[currentBlock].getNext();
+            contador++;
+        }
+
+        info.append("\n\nLa lectura se realizará como proceso en segundo plano.");
+
+        JOptionPane.showMessageDialog(this, 
+            info.toString(),
+            "Información de lectura", JOptionPane.INFORMATION_MESSAGE);
+    }
     private void abrirArchivoJournal() {
         try {
             File file = new File("data/journal.txt");
@@ -1697,6 +1806,35 @@ public class FileSystemGUI extends JFrame implements Terminable, LogListener {
 
         procesosActivos = new LinkedList<>();
         lockManager = new LockManager();
+    }
+    private void incrementarCiclos() {
+        contadorCiclos++;
+        SwingUtilities.invokeLater(() -> {
+            ciclosLabel.setText("🕐 CICLOS: " + contadorCiclos);
+
+            // Opcional: cambiar color según cantidad
+            if (contadorCiclos > 100) {
+                ciclosLabel.setForeground(Color.RED);
+            } else if (contadorCiclos > 50) {
+                ciclosLabel.setForeground(Color.ORANGE);
+            }
+        });
+    }
+    private void actualizarContadorCiclos() {
+        if (scheduler != null) {
+            int ciclos = scheduler.getContadorCiclos();
+            SwingUtilities.invokeLater(() -> {
+                ciclosLabel.setText("🕐 CICLOS: " + ciclos);
+
+                if (ciclos > 100) {
+                    ciclosLabel.setForeground(Color.RED);
+                } else if (ciclos > 50) {
+                    ciclosLabel.setForeground(Color.ORANGE);
+                } else {
+                    ciclosLabel.setForeground(new Color(0, 100, 0));
+                }
+            });
+        }
     }
     
 
