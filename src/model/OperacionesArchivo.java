@@ -110,7 +110,11 @@ public class OperacionesArchivo {
     }
 
     public boolean leer(Process p) {
-        // Solo simula lectura (no necesita journal)
+        FileSystemNode archivo = p.getArchivo();
+        if (archivo == null || archivo.isDirectory()) return false;
+
+        System.out.println("📖 Leyendo archivo: " + archivo.getFullPath());
+        // Simular lectura - en un sistema real aquí se leería el contenido
         return true;
     }
     public void setJournalManager(JournalManager journalManager) {

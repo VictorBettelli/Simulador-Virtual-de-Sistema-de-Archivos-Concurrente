@@ -37,14 +37,14 @@ public class UserSession {
     
     // ===== PERMISOS =====
     
+        /**
+     * TODOS los usuarios pueden leer TODOS los archivos
+     * (sin importar quién sea el dueño)
+     */
     public boolean canRead(FileSystemNode node) {
-        if (isAdmin) return true;
         if (node == null) return false;
-        
-        String owner = node.getOwner();
-        
-        // Usuario normal: solo sus archivos
-        return owner != null && owner.equals(currentUser);
+        // Todos pueden leer todo
+        return true;
     }
     
     public boolean canCreateIn(FileSystemNode parent) {
